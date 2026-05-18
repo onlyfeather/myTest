@@ -36,6 +36,7 @@ class PixivSpider:
         self.full_cookie = None
         self.user_id = None
         self.is_logged_in = False
+        self.last_error_reason = None
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/plain, */*',
@@ -81,6 +82,7 @@ class PixivSpider:
             "full_cookie": self.full_cookie,
             "user_id": self.user_id,
             "is_logged_in": self.is_logged_in,
+            "last_error_reason": self.last_error_reason,
             "preferred_tags": self.preferred_tags,
             "blocked_tags": self.blocked_tags,
             "favorite_authors": self.favorite_authors,
@@ -93,6 +95,7 @@ class PixivSpider:
         self.full_cookie = state.get("full_cookie")
         self.user_id = state.get("user_id")
         self.is_logged_in = state.get("is_logged_in", False)
+        self.last_error_reason = state.get("last_error_reason")
         self.preferred_tags = state.get("preferred_tags", set())
         self.blocked_tags = state.get("blocked_tags", set())
         self.favorite_authors = state.get("favorite_authors", {})
@@ -146,21 +149,47 @@ class PixivSpider:
             cookie_data = self.storage.load_cookie()
             if not cookie_data:
                 logger.info("Pixiv Cookie 尚未配置")
+                self.last_error_reason = "missing_cookie"
                 return False
 
             full_cookie = cookie_data.get("full_cookie")
             if not full_cookie:
                 logger.warning("Pixiv Cookie 记录为空")
+                self.last_error_reason = "empty_cookie"
                 return False
 
             self.full_cookie = full_cookie
             self.user_id = cookie_data.get("user_id")
             self.is_logged_in = True
+            self.last_error_reason = None
             logger.info("已从 SQLite 加载 Pixiv Cookie")
             return True
         except Exception as e:
             logger.exception(f"加载Cookie失败: {e}")
+            self.last_error_reason = "cookie_load_error"
             return False
+
+    def _record_http_error(self, exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code
+            if status_code in {401, 403}:
+                reason = "cookie_expired"
+            elif status_code == 429:
+                reason = "rate_limited"
+            elif status_code >= 500:
+                reason = "pixiv_server_error"
+            else:
+                reason = f"http_{status_code}"
+        elif isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.NetworkError)):
+            reason = "network_error"
+        elif isinstance(exc, RuntimeError) and "Session not initialized" in str(exc):
+            reason = "session_not_initialized"
+        else:
+            reason = "unknown_error"
+
+        self.last_error_reason = reason
+        self._publish_state()
+        return reason
     
     def set_cookie(self, cookie_string: str) -> bool:
         """
@@ -971,6 +1000,8 @@ class PixivSpider:
             # 检查是否有可用的Cookie
             if not self.full_cookie:
                 logger.debug("没有可用的Cookie，无法搜索图片")
+                self.last_error_reason = "missing_cookie"
+                self._publish_state()
                 return None
             
             # 处理搜索标签
@@ -1002,6 +1033,7 @@ class PixivSpider:
             
             if not search_keyword:
                 logger.debug("搜索关键词为空")
+                self.last_error_reason = "empty_keyword"
                 return None
             
             # 构建URL - 使用Pixiv的搜索API
@@ -1032,12 +1064,14 @@ class PixivSpider:
             response.raise_for_status()
             
             raw_data = response.json()
+            self.last_error_reason = None
             
             # 直接返回精简的数据结构
             return await self._extract_simplified_data(raw_data, search_keyword)
             
         except Exception as e:
-            logger.debug(f"搜索图片异常: {e}")
+            reason = self._record_http_error(e)
+            logger.debug(f"搜索图片异常: {e} ({reason})")
             return None
 
     async def _extract_simplified_data(self, raw_data: Dict[str, Any], search_keyword: str) -> Dict[str, Any]:
@@ -1748,6 +1782,8 @@ class PixivSpider:
             search_result = await self.search_illustrations(search_keyword)
             if not search_result:
                 logger.debug(f"搜索失败: {search_keyword}")
+                if not self.last_error_reason:
+                    self.last_error_reason = "search_failed"
                 return None
             
             # 根据模式获取图片
@@ -1764,6 +1800,7 @@ class PixivSpider:
             
             if not images:
                 logger.debug(f"未找到符合条件的图片")
+                self.last_error_reason = "no_qualified_images"
                 return None
             
             # 构建返回结果
@@ -1787,10 +1824,12 @@ class PixivSpider:
             }
             
             logger.debug(f"搜图完成 - 找到 {len(images)} 张图片")
+            self.last_error_reason = None
             return result
             
         except Exception as e:
-            logger.debug(f"搜图异常: {e}")
+            reason = self._record_http_error(e)
+            logger.debug(f"搜图异常: {e} ({reason})")
             return None
 
     async def _get_random_images(self, 
@@ -2343,6 +2382,7 @@ class PixivSpider:
             
             if not found_images:
                 logger.debug(f"在最近 {hours_limit} 小时内没有找到标签 '{search_keyword}' 的图片")
+                self.last_error_reason = "no_recent_images"
                 return None
             
             logger.debug(f"总共找到 {len(found_images)} 张最新图片")
@@ -2403,10 +2443,12 @@ class PixivSpider:
             }
             
             logger.debug(f"标签最新图片获取完成 - 找到 {len(enhanced_images)} 张图片")
+            self.last_error_reason = None
             return result
             
         except Exception as e:
-            logger.debug(f"获取标签最新图片异常: {e}")
+            reason = self._record_http_error(e)
+            logger.debug(f"获取标签最新图片异常: {e} ({reason})")
             return None
 
     def _parse_pixiv_time(self, time_str: str) -> Optional[datetime]:
@@ -2468,6 +2510,7 @@ class PixivSpider:
             
             if not search_keyword.strip():
                 logger.debug("搜索关键词为空")
+                self.last_error_reason = "empty_keyword"
                 return None
             
             # 构建URL - 使用Pixiv的搜索API
@@ -2498,12 +2541,14 @@ class PixivSpider:
             response.raise_for_status()
             
             raw_data = response.json()
+            self.last_error_reason = None
             
             # 直接返回精简的数据结构（跳过复杂的标签检查）
             return await self._extract_simplified_data_simple(raw_data, search_keyword)
             
         except Exception as e:
-            logger.debug(f"简化搜索图片异常: {e}")
+            reason = self._record_http_error(e)
+            logger.debug(f"简化搜索图片异常: {e} ({reason})")
             return None
 
     async def _extract_simplified_data_simple(self, 

@@ -32,11 +32,14 @@ def get_user_name(event: Event) -> str:
     return "用户"
 
 
-async def chat_rule_check(event: Event, bot: Bot) -> bool:
+def extract_plain_text(event: Event) -> str:
     if hasattr(event, "get_plaintext"):
-        text = event.get_plaintext()
-    else:
-        text = event.get_plain_text()
+        return event.get_plaintext()
+    return event.get_plain_text()
+
+
+async def chat_rule_check(event: Event, bot: Bot) -> bool:
+    text = extract_plain_text(event)
 
     if text.startswith((".", "。", "/")):
         return False
@@ -235,16 +238,18 @@ async def handle_help():
     await help_matcher.finish(msg)
 
 
-ai_switch_matcher = on_command(
-    "dice AI",
+ai_switch_matcher = on_regex(
+    r"^/dice\s+ai(?:\s+.*)?$",
+    flags=re.IGNORECASE,
     permission=SUPERUSER,
     priority=1,
 )
 
 
 @ai_switch_matcher.handle()
-async def handle_ai_switch(args: Message = CommandArg()):
-    action = args.extract_plain_text().strip().lower()
+async def handle_ai_switch(event: Event, regex_str: str = RegexStr()):
+    text = (regex_str or extract_plain_text(event)).strip()
+    action = re.sub(r"^/dice\s+ai\b", "", text, flags=re.IGNORECASE).strip().lower()
 
     if action in {"on", "enable", "enabled", "开", "开启", "启用", "true", "1"}:
         set_ai_enabled(True)

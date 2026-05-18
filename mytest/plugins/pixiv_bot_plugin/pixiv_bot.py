@@ -31,6 +31,42 @@ def extract_plain_text(event: Event) -> str:
         return event.get_plaintext()
     return event.get_plain_text()
 
+
+def pixiv_failure_message(
+    spider: PixivSpider,
+    action: str,
+    target: str,
+    detail: str = "",
+) -> str:
+    reason = getattr(spider, "last_error_reason", None)
+    reason_text = {
+        "missing_cookie": "还没有配置 Pixiv Cookie，请先使用 /p站 登录 [Cookie]。",
+        "empty_cookie": "已保存的 Pixiv Cookie 是空的，请重新使用 /p站 登录 [Cookie]。",
+        "cookie_load_error": "读取 Pixiv Cookie 失败，请检查本地数据文件权限，或重新登录。",
+        "cookie_expired": "Pixiv 拒绝了当前 Cookie，可能已经过期，请重新登录。",
+        "rate_limited": "Pixiv 返回了访问频率限制，请稍后再试。",
+        "pixiv_server_error": "Pixiv 服务端暂时异常，请稍后再试。",
+        "network_error": "连接 Pixiv 失败，可能是服务器网络、代理或 DNS 问题。",
+        "session_not_initialized": "Pixiv 请求会话尚未初始化，请重启机器人后再试。",
+        "empty_keyword": "搜索关键词为空，请补充标签。",
+        "search_failed": "Pixiv 搜索接口没有返回可用结果，可能是 Cookie 失效或网络波动。",
+        "no_qualified_images": "找到了搜索结果，但没有图片通过当前筛选条件。",
+        "no_recent_images": "找到了标签，但指定时间范围内没有新图。",
+        "unknown_error": "请求过程中出现未知错误，请查看后台日志。",
+    }.get(reason)
+
+    if reason_text is None and isinstance(reason, str) and reason.startswith("http_"):
+        reason_text = f"Pixiv 返回 HTTP {reason.removeprefix('http_')}，请求没有成功。"
+
+    if reason_text is None:
+        reason_text = "没有找到符合条件的图片。"
+
+    message = f"{action}「{target}」没有返回图片。\n原因：{reason_text}"
+    if detail:
+        message += f"\n建议：{detail}"
+    return message
+
+
 @asynccontextmanager
 async def get_pixiv_spider():
     async with PixivSpider() as spider:
@@ -418,12 +454,26 @@ async def search_images_handle(event: Event, regex_str: str = RegexStr()):
             search_result = await spider.search_images(tags, english_mode, count)
             
             if not search_result:
-                await UniMessage.text(f"未找到「{display_tags}」的相关图片").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "搜索",
+                        display_tags,
+                        "可先用 /p站 登录状态 检查 Cookie；如果带了收藏筛选，可以降低收藏阈值或减少标签。",
+                    )
+                ).send()
                 return
             
             images = search_result.get('images', [])
             if not images:
-                await UniMessage.text(f"未找到符合条件的图片").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "搜索",
+                        display_tags,
+                        "可以尝试减少标签、改用随机模式，或降低收藏筛选。",
+                    )
+                ).send()
                 return
             
             await send_images_with_info(images, f"搜索结果「{display_tags}」")
@@ -452,12 +502,26 @@ async def latest_images_handle(event: Event, regex_str: str = RegexStr()):
             search_result = await spider.get_tag_latest_images(tags, count, hours)
             
             if not search_result:
-                await UniMessage.text(f"未找到标签「{tags}」的最新图片").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "最新图片",
+                        tags,
+                        f"可以把时间范围放宽，例如：/p站 最新 {tags} {count} 168。",
+                    )
+                ).send()
                 return
             
             images = search_result.get('images', [])
             if not images:
-                await UniMessage.text(f"最近{hours}小时内没有标签「{tags}」的图片").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "最新图片",
+                        tags,
+                        f"最近 {hours} 小时内没有符合条件的作品，可以扩大到 168 小时试试。",
+                    )
+                ).send()
                 return
             
             await send_images_with_info(images, f"最新图片「{tags}」（{hours}小时内）")
@@ -491,12 +555,26 @@ async def popular_images_handle(event: Event, regex_str: str = RegexStr()):
                 search_result = await spider.search_images(f"{tags} 100users入り", "random", 1)
             
             if not search_result:
-                await UniMessage.text(f"未找到标签「{tags}」的高收藏美图").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "美图",
+                        tags,
+                        "已按收藏≥1000、≥500、≥100 依次回退；仍无结果时可以减少标签或换更常见的日文/英文标签。",
+                    )
+                ).send()
                 return
 
             images = search_result.get('images', [])
             if not images:
-                await UniMessage.text(f"未找到标签「{tags}」下收藏数达到100以上的美图").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "美图",
+                        tags,
+                        "已经回退到收藏≥100，仍没有可发送图片，可能是标签过窄或结果被过滤。",
+                    )
+                ).send()
                 return
             
             await send_images_with_info(images, f"美图推荐「{tags}」（收藏≥{selected_threshold}）")
@@ -523,12 +601,26 @@ async def hot_images_handle(event: Event, regex_str: str = RegexStr()):
             search_result = await spider.search_images(tags, "popular", count)
             
             if not search_result:
-                await UniMessage.text(f"未找到标签「{tags}」的热门图片").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "热门图片",
+                        tags,
+                        "热门模式依赖 Pixiv 的热门结果；如果没有返回，可以换用 搜图 或 美图。",
+                    )
+                ).send()
                 return
             
             images = search_result.get('images', [])
             if not images:
-                await UniMessage.text(f"未找到符合条件的热门图片").send()
+                await UniMessage.text(
+                    pixiv_failure_message(
+                        spider,
+                        "热门图片",
+                        tags,
+                        "Pixiv 没有给出可用热门作品，可以减少标签或改用随机搜图。",
+                    )
+                ).send()
                 return
             
             await send_images_with_info(images, f"热门推荐「{tags}」")
