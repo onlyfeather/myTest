@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +13,8 @@ class PixivBotConfig(BaseModel):
 def _load_config() -> PixivBotConfig:
     raw_config = get_driver().config
     return PixivBotConfig(
-        data_dir=getattr(raw_config, "pixiv_bot_data_dir", None),
+        data_dir=getattr(raw_config, "pixiv_bot_data_dir", None)
+        or os.getenv("PIXIV_BOT_DATA_DIR"),
     )
 
 
