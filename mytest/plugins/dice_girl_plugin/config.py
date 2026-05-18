@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -15,20 +16,50 @@ class DiceGirlConfig(BaseModel):
 
 def _load_config() -> DiceGirlConfig:
     raw_config = get_driver().config
+
+    def get_config_value(*names: str, default: str = "") -> str:
+        for name in names:
+            value = getattr(raw_config, name.lower(), "")
+            if value not in ("", None):
+                return str(value)
+
+            value = os.getenv(name.upper())
+            if value not in ("", None):
+                return str(value)
+
+        return default
+
+    def get_config_bool(name: str, default: bool = True) -> bool:
+        value = getattr(raw_config, name.lower(), None)
+        if value is None:
+            value = os.getenv(name.upper())
+
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in {"0", "false", "no", "off", "关闭"}
+
     return DiceGirlConfig(
-        ai_enabled=getattr(raw_config, "dice_girl_ai_enabled", True),
-        ai_api_key=getattr(raw_config, "dice_girl_ai_api_key", "")
-        or getattr(raw_config, "ai_api_key", "")
-        or getattr(raw_config, "openai_api_key", ""),
-        ai_base_url=getattr(raw_config, "dice_girl_ai_base_url", "")
-        or getattr(raw_config, "ai_base_url", "")
-        or getattr(raw_config, "openai_base_url", "")
-        or "https://api.openai.com/v1",
-        ai_model=getattr(raw_config, "dice_girl_ai_model", "")
-        or getattr(raw_config, "ai_model", "")
-        or getattr(raw_config, "openai_model", "")
-        or "gpt-4o-mini",
-        data_dir=getattr(raw_config, "dice_girl_data_dir", None),
+        ai_enabled=get_config_bool("dice_girl_ai_enabled", True),
+        ai_api_key=get_config_value(
+            "dice_girl_ai_api_key",
+            "ai_api_key",
+            "openai_api_key",
+        ),
+        ai_base_url=get_config_value(
+            "dice_girl_ai_base_url",
+            "ai_base_url",
+            "openai_base_url",
+            default="https://api.openai.com/v1",
+        ),
+        ai_model=get_config_value(
+            "dice_girl_ai_model",
+            "ai_model",
+            "openai_model",
+            default="gpt-4o-mini",
+        ),
+        data_dir=get_config_value("dice_girl_data_dir") or None,
     )
 
 
