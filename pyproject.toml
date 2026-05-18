@@ -21,6 +21,10 @@ dev = [
     "ruff"
 ]
 
+[tool.setuptools.packages.find]
+include = ["mytest*", "nonebot_plugin_status*"]
+exclude = ["data*", ".venv*", ".vscode*"]
+
 [tool.nonebot]
 plugin_dirs = ["mytest/plugins"]
 builtin_plugins = ["echo"]
