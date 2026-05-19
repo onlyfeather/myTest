@@ -2175,7 +2175,12 @@ class PixivSpider:
             logger.debug(f"获取美图异常: {e}")
             return []
 
-    async def get_random_image(self, user_qq: Optional[str] = None, max_attempts: int = 5) -> Optional[Dict[str, Any]]:
+    async def get_random_image(
+        self,
+        user_qq: Optional[str] = None,
+        max_attempts: int = 5,
+        min_bookmarks: int = 100,
+    ) -> Optional[Dict[str, Any]]:
         """
         获取随机图片推荐（保持向后兼容）
         
@@ -2243,7 +2248,7 @@ class PixivSpider:
                             logger.debug(f"质量评分: {quality_score['total_score']} ({quality_score['quality_level']})")
 
                     bookmark_count = int(illust_details.get("bookmarkCount", 0) or 0) if illust_details else 0
-                    if bookmark_count <= 100:
+                    if bookmark_count <= min_bookmarks:
                         logger.debug(f"每日一图跳过低收藏作品: ID={illust_id}, 收藏={bookmark_count}")
                         continue
 

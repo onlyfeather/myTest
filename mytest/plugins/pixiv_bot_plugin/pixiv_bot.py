@@ -28,6 +28,7 @@ PIXIV_PREFIX = "p站"
 MAX_IMAGES_PER_MESSAGE = 3
 RANDOM_MIN_BOOKMARKS = 100
 LATEST_MIN_BOOKMARKS = 50
+DAILY_MIN_BOOKMARKS = 2000
 BEAUTIFUL_THRESHOLDS = (5000, 2500, 1000, 500)
 
 
@@ -701,10 +702,14 @@ async def _handle_daily_recommend(event: Event):
         
         async with get_pixiv_spider() as spider:
             user_qq = event.get_user_id()
-            daily_result = await spider.get_random_image(user_qq, max_attempts=20)
+            daily_result = await spider.get_random_image(
+                user_qq,
+                max_attempts=20,
+                min_bookmarks=DAILY_MIN_BOOKMARKS,
+            )
             
             if not daily_result:
-                await UniMessage.text("获取今日推荐失败，请稍后重试").send()
+                await UniMessage.text(f"获取今日推荐失败：没有找到收藏>{DAILY_MIN_BOOKMARKS}的可用作品，请稍后再试或增加喜好标签。").send()
                 return
             
             image = daily_result.get('image')
