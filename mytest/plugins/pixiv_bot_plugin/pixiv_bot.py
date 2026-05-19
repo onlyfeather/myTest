@@ -26,6 +26,9 @@ logging.basicConfig(handlers=[LoguruHandler()])
 bot_logger = logger
 PIXIV_PREFIX = "p站"
 MAX_IMAGES_PER_MESSAGE = 3
+RANDOM_MIN_BOOKMARKS = 100
+LATEST_MIN_BOOKMARKS = 50
+BEAUTIFUL_THRESHOLDS = (5000, 2500, 1000, 500)
 
 
 def pixiv_command(name: str) -> str:
@@ -397,10 +400,11 @@ async def help_handle(result: Arparma):
 • p站 搜图 [标签] [数量] [模式] - 智能搜图
 • 搜图 [标签] [数量] [模式] - 核心短指令
   └─ 作品ID直达：p站 搜图 123456789
+  └─ 随机模式默认要求收藏>100；手动收藏筛选低于100时仍按100执行
   └─ 模式选择：随机(random)、最新(recent)、热门(popular)、美图(beautiful)
   └─ 收藏筛选：可追加 收藏500、收藏>=1000、500收藏
-• p站 最新 [标签] [数量] [小时] - 获取指定时间内的最新图片
-• p站 美图 [标签] - 获取1张高收藏精选美图（收藏≥1000/500/100 三级回退）
+• p站 最新 [标签] [数量] [小时] - 获取指定时间内收藏>50的最新图片
+• p站 美图 [标签] - 获取1张高收藏精选美图（收藏>5000/2500/1000/500 回退）
 • p站 热门 [标签] [数量] - 获取当前热门图片
 • p站 每日一图 - 获取个性化每日推荐
 
@@ -483,10 +487,26 @@ async def search_images_handle(event: Event, regex_str: str = RegexStr()):
                 await send_images_with_info([image], f"作品「{parsed.illust_id}」")
             return
 
+        effective_min_bookmarks = parsed.min_bookmarks
+        if english_mode == "random":
+            effective_min_bookmarks = max(parsed.min_bookmarks or 0, RANDOM_MIN_BOOKMARKS)
+            if parsed.min_bookmarks is None:
+                tags = f"{tags} {RANDOM_MIN_BOOKMARKS}users入り"
+                display_tags = f"{display_tags}（收藏>{RANDOM_MIN_BOOKMARKS}）"
+            elif effective_min_bookmarks != parsed.min_bookmarks:
+                tags = f"{parsed.display_tags} {effective_min_bookmarks}users入り"
+                display_tags = f"{parsed.display_tags}（收藏>{effective_min_bookmarks}）"
+
         await UniMessage.text(f"正在搜索「{display_tags}」的{count}张图片（{english_mode}模式），请稍候...").send()
         
         async with get_pixiv_spider() as spider:
-            search_result = await spider.search_images(tags, english_mode, count)
+            search_result = await spider.search_images(
+                tags,
+                english_mode,
+                count,
+                min_bookmarks=effective_min_bookmarks or 0,
+                max_attempts=max(20, count * 20),
+            )
             
             if not search_result:
                 await UniMessage.text(
@@ -531,10 +551,15 @@ async def latest_images_handle(event: Event, regex_str: str = RegexStr()):
     hours = parsed.hours
     
     try:
-        await UniMessage.text(f"正在获取「{tags}」最近{hours}小时的{count}张最新图片，请稍候...").send()
+        await UniMessage.text(f"正在获取「{tags}」最近{hours}小时收藏>{LATEST_MIN_BOOKMARKS}的{count}张最新图片，请稍候...").send()
         
         async with get_pixiv_spider() as spider:
-            search_result = await spider.get_tag_latest_images(tags, count, hours)
+            search_result = await spider.get_tag_latest_images(
+                tags,
+                count,
+                hours,
+                min_bookmarks=LATEST_MIN_BOOKMARKS,
+            )
             
             if not search_result:
                 await UniMessage.text(
@@ -559,7 +584,7 @@ async def latest_images_handle(event: Event, regex_str: str = RegexStr()):
                 ).send()
                 return
             
-            await send_images_with_info(images, f"最新图片「{tags}」（{hours}小时内）")
+            await send_images_with_info(images, f"最新图片「{tags}」（{hours}小时内，收藏>{LATEST_MIN_BOOKMARKS}）")
             
     except Exception as e:
         await UniMessage.text(f"获取最新图片时发生错误：{str(e)}").send()
@@ -578,24 +603,26 @@ async def popular_images_handle(event: Event, regex_str: str = RegexStr()):
         await UniMessage.text(f"正在获取「{tags}」的高收藏精选美图，请稍候...").send()
         
         async with get_pixiv_spider() as spider:
-            selected_threshold = 1000
-            search_result = await spider.search_images(f"{tags} 1000users入り", "random", 1)
-
-            if not search_result or not search_result.get("images"):
-                selected_threshold = 500
-                search_result = await spider.search_images(f"{tags} 500users入り", "random", 1)
-
-            if not search_result or not search_result.get("images"):
-                selected_threshold = 100
-                search_result = await spider.search_images(f"{tags} 100users入り", "random", 1)
+            selected_threshold = 0
+            search_result = None
+            for threshold in BEAUTIFUL_THRESHOLDS:
+                selected_threshold = threshold
+                search_result = await spider.search_images(
+                    f"{tags} {threshold}users入り",
+                    "random",
+                    1,
+                    min_bookmarks=threshold,
+                )
+                if search_result and search_result.get("images"):
+                    break
             
-            if not search_result:
+            if not search_result or not search_result.get("images"):
                 await UniMessage.text(
                     pixiv_failure_message(
                         spider,
                         "美图",
                         tags,
-                        "已按收藏≥1000、≥500、≥100 依次回退；仍无结果时可以减少标签或换更常见的日文/英文标签。",
+                        "已按收藏>5000、>2500、>1000、>500 依次回退；仍无结果时可以减少标签或换更常见的日文/英文标签。",
                     )
                 ).send()
                 return
@@ -607,12 +634,12 @@ async def popular_images_handle(event: Event, regex_str: str = RegexStr()):
                         spider,
                         "美图",
                         tags,
-                        "已经回退到收藏≥100，仍没有可发送图片，可能是标签过窄或结果被过滤。",
+                        "已经回退到收藏>500，仍没有可发送图片，可能是标签过窄或结果被过滤。",
                     )
                 ).send()
                 return
             
-            await send_images_with_info(images, f"美图推荐「{tags}」（收藏≥{selected_threshold}）")
+            await send_images_with_info(images, f"美图推荐「{tags}」（收藏>{selected_threshold}）")
             
     except Exception as e:
         await UniMessage.text(f"获取美图时发生错误：{str(e)}").send()
@@ -667,16 +694,14 @@ async def hot_images_handle(event: Event, regex_str: str = RegexStr()):
 
 
 @daily_matcher.handle()
-async def daily_recommend_handle(result: Arparma):
+async def daily_recommend_handle(event: Event, result: Arparma):
     """处理今日推荐命令"""
     try:
         await UniMessage.text("正在获取今日推荐图片，请稍候...").send()
         
         async with get_pixiv_spider() as spider:
-            # 获取用户QQ号（如果可用）
-            user_qq = None  # 这里需要根据nonebot的实际API获取用户ID
-            
-            daily_result = await spider.get_random_image(user_qq)
+            user_qq = event.get_user_id()
+            daily_result = await spider.get_random_image(user_qq, max_attempts=20)
             
             if not daily_result:
                 await UniMessage.text("获取今日推荐失败，请稍后重试").send()
@@ -710,7 +735,7 @@ async def daily_recommend_handle(result: Arparma):
             else:
                 logger.debug("每日一图图片ID为空")
             
-            await send_single_image_with_info(image, f"📅 今日推荐「{tag}」", quality_score)
+            await send_images_with_info([image], f"📅 今日推荐「{tag}」")
             
     except Exception as e:
         await UniMessage.text(f"获取今日推荐时发生错误：{str(e)}").send()
@@ -1228,7 +1253,7 @@ def _image_name_from_url(url: str, content_type: str = "") -> str:
     return f"{digest}.{suffix}"
 
 
-async def _download_image_for_send(url: str) -> Optional[Image]:
+async def _download_image_for_send(url: str, retries: int = 5) -> Optional[Image]:
     """Download remote image first so OneBot does not need to fetch Pixiv URLs."""
     cache_dir = get_data_path("image_cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1248,34 +1273,41 @@ async def _download_image_for_send(url: str) -> Optional[Image]:
         "Referer": "https://www.pixiv.net/",
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            if content_type and not content_type.lower().startswith("image/"):
-                bot_logger.warning(f"图片下载返回非图片内容: url={url}, content-type={content_type}")
-                return None
+    for attempt in range(1, retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=45.0, follow_redirects=True, trust_env=True) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if content_type and not content_type.lower().startswith("image/"):
+                    bot_logger.warning(f"图片下载返回非图片内容: url={url}, content-type={content_type}")
+                    return None
 
-            raw = response.content
-            if not raw:
-                bot_logger.warning(f"图片下载内容为空: url={url}")
-                return None
+                raw = response.content
+                if not raw:
+                    bot_logger.warning(f"图片下载内容为空: url={url}")
+                    return None
 
-            name = _image_name_from_url(url, content_type)
-            cache_path = cache_dir / name
-            cache_path.write_bytes(raw)
-            return Image(raw=raw, name=name)
-    except Exception as e:
-        bot_logger.warning(f"图片下载失败，将回退 URL 发送: url={url}, error={type(e).__name__}: {e}")
-        return None
+                name = _image_name_from_url(url, content_type)
+                cache_path = cache_dir / name
+                cache_path.write_bytes(raw)
+                return Image(raw=raw, name=name)
+        except Exception as e:
+            bot_logger.warning(
+                f"图片下载失败({attempt}/{retries}): "
+                f"url={url}, error={type(e).__name__}: {e}"
+            )
+            if attempt < retries:
+                await asyncio.sleep(1.5 * attempt)
+
+    return None
 
 
-async def _build_send_image_segment(url: str) -> Image:
+async def _build_send_image_segment(url: str) -> Optional[Image]:
     image = await _download_image_for_send(url)
-    if image is not None:
-        return image
-    return Image(url=url)
+    if image is None:
+        bot_logger.warning(f"图片下载多次失败，跳过远程URL发送以避免 send_msg 超时: {url}")
+    return image
 
 async def send_images_with_info(images: List[dict], title: str):
     """发送多张图片及其信息"""
@@ -1373,10 +1405,25 @@ async def send_images_with_info(images: List[dict], title: str):
                 try:
                     message = UniMessage.text(message_text + "\n")
                     bot_logger.debug(f"第 {i} 张图片基础消息构建成功")
+                    added_images = 0
+                    skipped_images = 0
                     
                     for url_idx, url in enumerate(urls):
                         bot_logger.debug(f"第 {i} 张图片添加第 {url_idx+1} 个URL")
-                        message = message + await _build_send_image_segment(url)
+                        image_segment = await _build_send_image_segment(url)
+                        if image_segment is None:
+                            skipped_images += 1
+                            continue
+                        message = message + image_segment
+                        added_images += 1
+
+                    if skipped_images:
+                        message = message + UniMessage.text(
+                            f"\n有 {skipped_images} 张图片下载失败，已跳过，避免发送超时。"
+                        )
+
+                    if added_images == 0:
+                        message = message + UniMessage.text("\n图片下载失败，请稍后重试。")
                     
                     bot_logger.debug(f"第 {i} 张图片完整消息构建完成，开始发送")
                     # 一次性发送，减少网络请求

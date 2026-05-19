@@ -1735,7 +1735,8 @@ class PixivSpider:
                            mode: str = "random", 
                            count: int = 1, 
                            min_quality_score: float = 60.0,
-                           max_attempts: int = 10) -> Optional[Dict[str, Any]]:
+                           max_attempts: int = 10,
+                           min_bookmarks: int = 0) -> Optional[Dict[str, Any]]:
         """
         搜图机器人核心功能
         
@@ -1776,7 +1777,7 @@ class PixivSpider:
                 return None
             
             search_keyword = ' '.join(tags)
-            logger.debug(f"开始搜图 - 关键词: '{search_keyword}', 模式: {mode}, 数量: {count}")
+            logger.debug(f"开始搜图 - 关键词: '{search_keyword}', 模式: {mode}, 数量: {count}, 收藏门槛: >{min_bookmarks}")
             
             # 执行搜索
             search_result = await self.search_illustrations(search_keyword)
@@ -1789,7 +1790,7 @@ class PixivSpider:
             # 根据模式获取图片
             if mode == "random":
                 images = await self._get_random_images(
-                    search_result, count, min_quality_score, max_attempts
+                    search_result, count, min_quality_score, max_attempts, min_bookmarks
                 )
             elif mode == "recent":
                 images = await self._get_recent_popular_images(search_result, count)
@@ -1812,6 +1813,7 @@ class PixivSpider:
                     'requested_count': count,
                     'actual_count': len(images),
                     'min_quality_score': min_quality_score if mode == "random" else None,
+                    'min_bookmarks': min_bookmarks,
                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 },
                 'images': images,
@@ -1836,7 +1838,8 @@ class PixivSpider:
                                 search_result: Dict[str, Any], 
                                 count: int, 
                                 min_quality_score: float,
-                                max_attempts: int) -> List[Dict[str, Any]]:
+                                max_attempts: int,
+                                min_bookmarks: int = 0) -> List[Dict[str, Any]]:
         """
         获取随机图片（带质量评分检查，支持小众tag降级策略）
         
@@ -1906,8 +1909,16 @@ class PixivSpider:
                     logger.debug(f"质量评分计算异常: {e}")
                     quality_score = None
                 
-                # 检查质量评分
-                if quality_score and quality_score['total_score'] >= min_quality_score:
+                bookmark_count = 0
+                if illust_details:
+                    bookmark_count = int(illust_details.get('bookmarkCount', 0) or 0)
+
+                # 检查质量评分和收藏数
+                if (
+                    quality_score
+                    and quality_score['total_score'] >= min_quality_score
+                    and bookmark_count > min_bookmarks
+                ):
                     # 获取原始图片URL
                     original_urls = await self.get_illust_original_urls(image_id)
                     primary_url = original_urls[0] if original_urls else candidate.get('url', '')
@@ -1929,23 +1940,25 @@ class PixivSpider:
                         'createDate': candidate.get('createDate', ''),
                         'aiType': candidate.get('aiType', 0),
                         'profileImageUrl': candidate.get('profileImageUrl', ''),
-                        'source': 'random_selection'
+                        'source': 'random_selection',
+                        'bookmarkCount': bookmark_count
                     }
                     
                     images.append(image_info)
-                    logger.debug(f"✅ 图片符合要求 - ID: {image_id}, 评分: {quality_score['total_score']}")
+                    logger.debug(f"✅ 图片符合要求 - ID: {image_id}, 评分: {quality_score['total_score']}, 收藏: {bookmark_count}")
                 else:
                     # 存储不符合要求的候选图片，用于降级处理
                     failed_candidates.append({
                         'candidate': candidate,
                         'quality_score': quality_score,
-                        'reason': 'low_quality' if quality_score else 'no_score'
+                        'reason': 'low_bookmarks' if bookmark_count <= min_bookmarks else ('low_quality' if quality_score else 'no_score'),
+                        'bookmark_count': bookmark_count
                     })
                     score_text = f"{quality_score['total_score']}" if quality_score else "无评分"
-                    logger.debug(f"❌ 图片不符合要求 - ID: {image_id}, 评分: {score_text} < {min_quality_score}")
+                    logger.debug(f"❌ 图片不符合要求 - ID: {image_id}, 评分: {score_text} < {min_quality_score} 或收藏 {bookmark_count} <= {min_bookmarks}")
             
-            # 第二阶段：如果没找到足够的高质量图片，启用降级策略
-            if len(images) < count and failed_candidates:
+            # 第二阶段：无收藏门槛时保留旧降级策略；有收藏门槛时不降级破坏质量要求
+            if min_bookmarks <= 0 and len(images) < count and failed_candidates:
                 logger.debug(f"🔄 启用降级策略 - 高质量图片不足，从剩余候选中选择最佳图片")
                 
                 # 按质量评分排序失败的候选图片（有评分的优先）
@@ -1989,7 +2002,7 @@ class PixivSpider:
                     logger.debug(f"🔄 降级选择 - ID: {candidate.get('id')}, 评分: {score_text} (原因: {failed_item['reason']})")
             
             # 第三阶段：如果仍然不足，直接从剩余候选中随机选择
-            if len(images) < count:
+            if min_bookmarks <= 0 and len(images) < count:
                 logger.debug(f"🔄 最终降级 - 仍然不足，从剩余候选中随机选择")
                 
                 # 获取未使用的候选图片
@@ -2183,17 +2196,18 @@ class PixivSpider:
                 logger.debug("喜好tag池为空，无法获取图片推荐")
                 return None
             
+            seed = self._get_daily_seed(user_qq or "anonymous")
+            start_index = seed % len(available_tags)
+            ordered_tags = available_tags[start_index:] + available_tags[:start_index]
+
             # 2. 尝试多个tag，直到找到有热门作品的tag
             attempted_tags = []
             
-            for attempt in range(max_attempts):
-                # 从剩余tag中随机选择
-                remaining_tags = [tag for tag in available_tags if tag not in attempted_tags]
-                if not remaining_tags:
+            for attempt, selected_tag in enumerate(ordered_tags[:max_attempts]):
+                if selected_tag in attempted_tags:
                     logger.debug("已尝试所有可用tag，都没有找到热门作品")
                     break
-                
-                selected_tag = random.choice(remaining_tags)
+
                 attempted_tags.append(selected_tag)
                 
                 logger.debug(f"尝试第 {attempt + 1} 次，选中tag: {selected_tag}")
@@ -2212,43 +2226,41 @@ class PixivSpider:
                 
                 logger.debug(f"tag '{selected_tag}' 找到热门作品 {len(popular_images)} 张")
                 
-                # 5. 从热门作品中随机选择图片
-                selected_image = random.choice(popular_images)
-                if not selected_image:
-                    logger.debug("选择图片失败，尝试下一个tag")
-                    continue
-                
-                # 6. 获取图片详细统计数据并计算质量评分
-                quality_score = None
-                try:
-                    # 调用详情API获取完整统计数据
-                    illust_id = selected_image.get('id')
+                # 5. 根据每日种子稳定选择，并要求收藏数达标
+                offset = seed % len(popular_images)
+                ordered_images = popular_images[offset:] + popular_images[:offset]
+                for selected_image in ordered_images:
+                    if not selected_image:
+                        continue
+
+                    quality_score = None
+                    illust_details = None
+                    illust_id = selected_image.get("id")
                     if illust_id:
                         illust_details = await self.get_illust_details(illust_id)
                         if illust_details:
-                            # 计算质量评分
                             quality_score = self.calculate_quality_score(illust_details)
                             logger.debug(f"质量评分: {quality_score['total_score']} ({quality_score['quality_level']})")
-                        else:
-                            logger.debug("获取图片详情失败，跳过质量评分")
-                    else:
-                        logger.debug("图片ID为空，跳过质量评分")
-                except Exception as e:
-                    logger.debug(f"质量评分计算异常: {e}")
+
+                    bookmark_count = int(illust_details.get("bookmarkCount", 0) or 0) if illust_details else 0
+                    if bookmark_count <= 100:
+                        logger.debug(f"每日一图跳过低收藏作品: ID={illust_id}, 收藏={bookmark_count}")
+                        continue
+
+                    selected_image["bookmarkCount"] = bookmark_count
+                    result = {
+                        'user_qq': user_qq,
+                        'tag': selected_tag,
+                        'image': selected_image,
+                        'date': datetime.now().strftime("%Y-%m-%d"),
+                        'available_tags_count': len(available_tags),
+                        'available_images_count': len(popular_images),
+                        'attempted_tags': attempted_tags,
+                        'quality_score': quality_score
+                    }
                 
-                # 7. 返回结果（不包含质量评分）
-                result = {
-                    'user_qq': user_qq,
-                    'tag': selected_tag,
-                    'image': selected_image,
-                    'date': datetime.now().strftime("%Y-%m-%d"),
-                    'available_tags_count': len(available_tags),
-                    'available_images_count': len(popular_images),
-                    'attempted_tags': attempted_tags
-                }
-                
-                logger.debug(f"图片推荐获取成功: tag={selected_tag}, image_id={selected_image.get('id')}, 质量评分={quality_score['total_score'] if quality_score else 'N/A'}")
-                return result
+                    logger.debug(f"图片推荐获取成功: tag={selected_tag}, image_id={selected_image.get('id')}, 收藏={bookmark_count}, 质量评分={quality_score['total_score'] if quality_score else 'N/A'}")
+                    return result
             
             # 如果所有尝试都失败了
             logger.debug(f"尝试了 {len(attempted_tags)} 个tag都没有找到热门作品: {', '.join(attempted_tags)}")
@@ -2261,7 +2273,8 @@ class PixivSpider:
     async def get_tag_latest_images(self, 
                                    tag: Union[str, List[str]], 
                                    count: int = 5,
-                                   hours_limit: int = 24) -> Optional[Dict[str, Any]]:
+                                   hours_limit: int = 24,
+                                   min_bookmarks: int = 0) -> Optional[Dict[str, Any]]:
         """
         获取某个标签的最新更新图片（重新设计版本 - 专注时效性）
         
@@ -2297,7 +2310,7 @@ class PixivSpider:
                 return None
             
             search_keyword = ' '.join(tags)
-            logger.debug(f"开始获取标签最新图片 - 关键词: '{search_keyword}', 数量: {count}, 时间限制: {hours_limit}小时")
+            logger.debug(f"开始获取标签最新图片 - 关键词: '{search_keyword}', 数量: {count}, 时间限制: {hours_limit}小时, 收藏门槛: >{min_bookmarks}")
             
             # 计算时间阈值（修复时区问题）
             from datetime import datetime, timedelta, timezone
@@ -2345,10 +2358,17 @@ class PixivSpider:
                     
                     # 检查是否在时间范围内
                     if create_time >= time_threshold:
+                        illust_details = await self.get_illust_details(image.get('id', ''))
+                        bookmark_count = int(illust_details.get('bookmarkCount', 0) or 0) if illust_details else 0
+                        if bookmark_count <= min_bookmarks:
+                            logger.debug(f"最新图片跳过低收藏作品: ID={image.get('id')}, 收藏={bookmark_count} <= {min_bookmarks}")
+                            continue
+
                         # 计算上传小时数
                         current_time = datetime.now(timezone.utc)
                         hours_since_upload = (current_time - create_time).total_seconds() / 3600
                         image['hours_since_upload'] = hours_since_upload
+                        image['bookmarkCount'] = bookmark_count
                         found_images.append(image)
                         page_valid_count += 1
                         
@@ -2417,7 +2437,8 @@ class PixivSpider:
                     'aiType': image.get('aiType', 0),
                     'profileImageUrl': image.get('profileImageUrl', ''),
                     'hours_since_upload': image.get('hours_since_upload', 0),
-                    'source': 'tag_latest'
+                    'source': 'tag_latest',
+                    'bookmarkCount': image.get('bookmarkCount', 0)
                 }
                 enhanced_images.append(enhanced_image)
             
