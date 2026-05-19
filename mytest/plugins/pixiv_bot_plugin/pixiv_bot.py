@@ -1,10 +1,14 @@
 # plugins/pixiv_bot_plugin/pixiv_bot.py
 import asyncio
+import hashlib
 import re
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Optional, List, Union
+from urllib.parse import urlparse
+
+import httpx
 from nonebot.adapters import Event
 from nonebot.params import RegexStr
 from nonebot_plugin_alconna import Command, Alconna, Args, Arparma, on_alconna
@@ -12,6 +16,7 @@ from nonebot_plugin_alconna.uniseg import Image, UniMessage
 from nonebot.plugin import PluginMetadata
 from nonebot import logger, on_regex
 from nonebot.log import LoguruHandler
+from .config import get_data_path
 from .spiderPixiv import PixivSpider
 
 # 配置logging重定向到loguru
@@ -1176,6 +1181,72 @@ def extract_image_urls(image: dict) -> List[str]:
     
     return urls
 
+
+def _image_name_from_url(url: str, content_type: str = "") -> str:
+    suffix = ""
+    path = urlparse(url).path
+    if "." in path:
+        suffix = path.rsplit(".", 1)[-1].lower()
+    if suffix not in {"jpg", "jpeg", "png", "gif", "webp"}:
+        suffix = {
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/gif": "gif",
+            "image/webp": "webp",
+        }.get(content_type.split(";")[0].strip().lower(), "jpg")
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+    return f"{digest}.{suffix}"
+
+
+async def _download_image_for_send(url: str) -> Optional[Image]:
+    """Download remote image first so OneBot does not need to fetch Pixiv URLs."""
+    cache_dir = get_data_path("image_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    name = _image_name_from_url(url)
+    cache_path = cache_dir / name
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        raw = cache_path.read_bytes()
+        return Image(raw=raw, name=name)
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.pixiv.net/",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            if content_type and not content_type.lower().startswith("image/"):
+                bot_logger.warning(f"图片下载返回非图片内容: url={url}, content-type={content_type}")
+                return None
+
+            raw = response.content
+            if not raw:
+                bot_logger.warning(f"图片下载内容为空: url={url}")
+                return None
+
+            name = _image_name_from_url(url, content_type)
+            cache_path = cache_dir / name
+            cache_path.write_bytes(raw)
+            return Image(raw=raw, name=name)
+    except Exception as e:
+        bot_logger.warning(f"图片下载失败，将回退 URL 发送: url={url}, error={type(e).__name__}: {e}")
+        return None
+
+
+async def _build_send_image_segment(url: str) -> Image:
+    image = await _download_image_for_send(url)
+    if image is not None:
+        return image
+    return Image(url=url)
+
 async def send_images_with_info(images: List[dict], title: str):
     """发送多张图片及其信息"""
     bot_logger.debug(f"send_images_with_info 开始执行，title: {title}")
@@ -1269,7 +1340,7 @@ async def send_images_with_info(images: List[dict], title: str):
                     
                     for url_idx, url in enumerate(urls):
                         bot_logger.debug(f"第 {i} 张图片添加第 {url_idx+1} 个URL")
-                        message = message + Image(url=url)
+                        message = message + await _build_send_image_segment(url)
                     
                     bot_logger.debug(f"第 {i} 张图片完整消息构建完成，开始发送")
                     # 一次性发送，减少网络请求
