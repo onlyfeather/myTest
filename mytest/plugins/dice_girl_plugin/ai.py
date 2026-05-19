@@ -161,6 +161,27 @@ def build_dynamic_prompt(role_data, current_fav, user_name, user_text="", is_cha
     user_call = stage.get("user_call", persona.get("user_call_default", "用户"))
     attitude = stage.get("attitude", "态度未定义")
 
+    if current_fav <= 20:
+        relationship_directive = (
+            "低好感强约束：保持明显距离和防备；称呼更冷，回复更短更尖锐；"
+            "拒绝主动亲密、撒娇和过度照顾。若用户试图亲近，应先表现戒备、躲避或冷淡拒绝。"
+        )
+    elif current_fav <= 59:
+        relationship_directive = (
+            "中低好感强约束：可以正常对话，但仍保持审视和嘴硬；"
+            "关心必须包装成吐槽、职责或风险控制，不要轻易承认喜欢或依赖。"
+        )
+    elif current_fav <= 85:
+        relationship_directive = (
+            "中高好感强约束：明显更在意用户，允许别扭关心、吃醋、轻微暧昧和试探；"
+            "被夸奖或靠近时应有害羞、停顿、嘴硬等反应，但不要直接进入恋人式依赖。"
+        )
+    else:
+        relationship_directive = (
+            "高好感强约束：态度应明显亲近，允许主动靠近、占有欲、撒娇式试探和更柔软的称呼；"
+            "仍保持角色核心性格，不要变成无条件顺从。亲密张力可以更明显，但必须由上下文推动。"
+        )
+
     # 3. Lore 提取
     global_lore_list = persona_manager.get_global_lore()
     lore_context = extract_lore(global_lore_list, user_text)
@@ -209,6 +230,7 @@ def build_dynamic_prompt(role_data, current_fav, user_name, user_text="", is_cha
 - 关系阶段：{stage_name}
 - 对用户的称呼：{user_call}
 - 当前态度：{attitude}
+- 阶段执行规则：{relationship_directive}
 </relationship_state>
 
 <style_rules>
@@ -217,6 +239,7 @@ def build_dynamic_prompt(role_data, current_fav, user_name, user_text="", is_cha
 - 可以包含简短动作描写，用星号包裹，例如 *轻轻偏过头*。
 - 可以保留暧昧、挑逗、亲密张力和轻微 R18 氛围，但必须服务于角色性格与当前关系阶段。
 - 不要无理由突然推进亲密行为；亲密程度应随用户输入、关系阶段和上下文自然变化。
+- 好感度差异必须体现在回复里：低好感疏离防备，中好感别扭试探，高好感主动亲近。
 - 不替用户做选择、动作、感受或生理反应。
 - 不输出系统说明、道德说教、Markdown 语法、Markdown 代码块或额外格式。
 - reply 字段内只写纯文本角色回复；不要使用标题、列表、引用块、代码块、表格、分隔线等 Markdown 格式。
@@ -252,6 +275,7 @@ delta 表示本次互动对好感度的轻微变化，必须是 -3 到 3 的整�
             stage_name=stage_name,
             user_call=user_call,
             attitude=attitude,
+            relationship_directive=relationship_directive,
             examples=examples_text,
             lore_context=lore_context
         )
@@ -266,6 +290,7 @@ delta 表示本次互动对好感度的轻微变化，必须是 -3 到 3 的整�
 - 当前关系阶段：{stage_name}
 - 用户称呼：{user_call}
 - 当前态度：{attitude}
+- 阶段执行规则：{relationship_directive}
 
 【骰子反应指南】
 - 大成功时：{react_crit_success}
@@ -277,6 +302,7 @@ delta 表示本次互动对好感度的轻微变化，必须是 -3 到 3 的整�
 - 只能评价已经给出的骰点结果。
 - 不得改变、暗示改变或宣称自己操控了骰点。
 - 好感度只影响称呼、态度和措辞风格，不影响骰点。
+- 好感度差异必须体现在点评口吻中：低好感更冷淡，中好感别扭，高好感更亲近。
 - 不要输出多余解释、Markdown 或代码块。
 
 【输出格式】
@@ -289,6 +315,7 @@ delta 表示本次互动对好感度的轻微变化，必须是 -3 到 3 的整�
             stage_name=stage_name,
             user_call=user_call,
             attitude=attitude,
+            relationship_directive=relationship_directive,
             react_crit_success=dice_reactions.get("critical_success", "激动"),
             react_success=dice_reactions.get("success", "得意"),
             react_fail=dice_reactions.get("failure", "嘲讽"),
