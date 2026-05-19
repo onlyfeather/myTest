@@ -103,6 +103,7 @@ class SearchParams:
     count: int
     mode: str
     min_bookmarks: Optional[int] = None
+    illust_id: Optional[str] = None
 
 
 def parse_bookmark_filter(token: str) -> Optional[int]:
@@ -158,6 +159,15 @@ def parse_search_text(raw_text: str) -> SearchParams | None:
         return None
 
     display_tags = " ".join(tags)
+    if len(tags) == 1 and tags[0].isdigit():
+        return SearchParams(
+            display_tags=display_tags,
+            search_tags=display_tags,
+            count=1,
+            mode=mode,
+            illust_id=tags[0],
+        )
+
     search_tags = display_tags
     if min_bookmarks is not None:
         search_tags = f"{search_tags} {min_bookmarks}users入り"
@@ -385,6 +395,7 @@ async def help_handle(result: Arparma):
 📸 核心功能 - 图片搜索与推荐：
 • p站 搜图 [标签] [数量] [模式] - 智能搜图
 • 搜图 [标签] [数量] [模式] - 核心短指令
+  └─ 作品ID直达：p站 搜图 123456789
   └─ 模式选择：随机(random)、最新(recent)、热门(popular)、美图(beautiful)
   └─ 收藏筛选：可追加 收藏500、收藏>=1000、500收藏
 • p站 最新 [标签] [数量] [小时] - 获取指定时间内的最新图片
@@ -453,6 +464,24 @@ async def search_images_handle(event: Event, regex_str: str = RegexStr()):
         display_tags = parsed.display_tags
         if parsed.min_bookmarks is not None:
             display_tags = f"{display_tags}（收藏≥{parsed.min_bookmarks}）"
+
+        if parsed.illust_id:
+            await UniMessage.text(f"正在获取作品「{parsed.illust_id}」，请稍候...").send()
+            async with get_pixiv_spider() as spider:
+                image = await spider.get_image_info(parsed.illust_id)
+                if not image:
+                    await UniMessage.text(
+                        pixiv_failure_message(
+                            spider,
+                            "获取作品",
+                            parsed.illust_id,
+                            "请确认作品ID正确；也可以用 /p站 登录状态 检查 Cookie。",
+                        )
+                    ).send()
+                    return
+                await send_images_with_info([image], f"作品「{parsed.illust_id}」")
+            return
+
         await UniMessage.text(f"正在搜索「{display_tags}」的{count}张图片（{english_mode}模式），请稍候...").send()
         
         async with get_pixiv_spider() as spider:
