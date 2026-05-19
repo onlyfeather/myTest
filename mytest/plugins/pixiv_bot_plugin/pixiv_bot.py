@@ -361,6 +361,7 @@ latest_matcher = on_regex(r"^(?:/p站\s+)?最新(?:\s+.*)?$", priority=1, block=
 popular_matcher = on_regex(r"^(?:/p站\s+)?美图(?:\s+.*)?$", priority=1, block=True)
 hot_matcher = on_regex(r"^(?:/p站\s+)?热门(?:\s+.*)?$", priority=1, block=True)
 daily_matcher = on_alconna(daily_recommend, use_cmd_start=True, block=True)
+daily_shortcut_matcher = on_regex(r"^(?:/?p站\s+)?每日一图$", priority=1, block=True)
 
 # 作者追踪
 author_matcher = on_alconna(author_images, use_cmd_start=True, block=True)
@@ -406,7 +407,7 @@ async def help_handle(result: Arparma):
 • p站 最新 [标签] [数量] [小时] - 获取指定时间内收藏>50的最新图片
 • p站 美图 [标签] - 获取1张高收藏精选美图（收藏>5000/2500/1000/500 回退）
 • p站 热门 [标签] [数量] - 获取当前热门图片
-• p站 每日一图 - 获取个性化每日推荐
+• p站 每日一图 / 每日一图 - 获取个性化每日推荐
 
 👥 作者追踪 - 作者管理与作品浏览：
 • p站 作者 [ID/圈名] [数量] [模式] - 获取作者作品
@@ -693,8 +694,7 @@ async def hot_images_handle(event: Event, regex_str: str = RegexStr()):
 
 
 
-@daily_matcher.handle()
-async def daily_recommend_handle(event: Event, result: Arparma):
+async def _handle_daily_recommend(event: Event):
     """处理今日推荐命令"""
     try:
         await UniMessage.text("正在获取今日推荐图片，请稍候...").send()
@@ -739,6 +739,16 @@ async def daily_recommend_handle(event: Event, result: Arparma):
             
     except Exception as e:
         await UniMessage.text(f"获取今日推荐时发生错误：{str(e)}").send()
+
+
+@daily_matcher.handle()
+async def daily_recommend_handle(event: Event, result: Arparma):
+    await _handle_daily_recommend(event)
+
+
+@daily_shortcut_matcher.handle()
+async def daily_shortcut_handle(event: Event):
+    await _handle_daily_recommend(event)
 
 # ==================== 作者追踪功能处理器 ====================
 
