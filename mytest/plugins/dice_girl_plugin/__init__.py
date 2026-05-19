@@ -148,8 +148,7 @@ async def handle_chat(bot: Bot, event: Event):
         reply_text = "..."
 
     delta = ai_result.get("delta", 0)
-    if delta != 0:
-        update_user_favorability(user_id, delta, role_id=role_key)
+    update_user_favorability(user_id, delta, role_id=role_key)
 
     memory_manager.add_message(user_id, "user", text)
     memory_manager.add_message(user_id, "assistant", reply_text)
