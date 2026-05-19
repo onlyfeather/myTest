@@ -25,6 +25,7 @@ logging.basicConfig(handlers=[LoguruHandler()])
 # 使用nonebot的logger
 bot_logger = logger
 PIXIV_PREFIX = "p站"
+MAX_IMAGES_PER_MESSAGE = 3
 
 
 def pixiv_command(name: str) -> str:
@@ -122,7 +123,7 @@ def parse_bookmark_filter(token: str) -> Optional[int]:
 
 def parse_search_text(raw_text: str) -> SearchParams | None:
     text = raw_text.strip()
-    for prefix in (f"/{PIXIV_PREFIX} 搜图", "搜图"):
+    for prefix in (f"/{PIXIV_PREFIX} 搜图", f"{PIXIV_PREFIX} 搜图", "搜图"):
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
             break
@@ -139,6 +140,15 @@ def parse_search_text(raw_text: str) -> SearchParams | None:
         if tokens[index].lower() in MODE_MAPPING:
             mode = convert_mode_to_english(tokens.pop(index))
             break
+
+    if len(tokens) == 1 and tokens[0].isdigit():
+        return SearchParams(
+            display_tags=tokens[0],
+            search_tags=tokens[0],
+            count=1,
+            mode=mode,
+            illust_id=tokens[0],
+        )
 
     count = 1
     for index in range(len(tokens) - 1, -1, -1):
@@ -159,15 +169,6 @@ def parse_search_text(raw_text: str) -> SearchParams | None:
         return None
 
     display_tags = " ".join(tags)
-    if len(tags) == 1 and tags[0].isdigit():
-        return SearchParams(
-            display_tags=display_tags,
-            search_tags=display_tags,
-            count=1,
-            mode=mode,
-            illust_id=tags[0],
-        )
-
     search_tags = display_tags
     if min_bookmarks is not None:
         search_tags = f"{search_tags} {min_bookmarks}users入り"
@@ -352,7 +353,7 @@ help_cmd = Alconna(pixiv_command("帮助"))
 # ==================== 注册命令匹配器 ====================
 
 # 核心功能
-search_matcher = on_regex(r"^(?:/p站\s+)?搜图(?:\s+.*)?$", priority=1, block=True)
+search_matcher = on_regex(r"^(?:/?p站\s+)?搜图(?:\s+.*)?$", priority=1, block=True)
 latest_matcher = on_regex(r"^(?:/p站\s+)?最新(?:\s+.*)?$", priority=1, block=True)
 popular_matcher = on_regex(r"^(?:/p站\s+)?美图(?:\s+.*)?$", priority=1, block=True)
 hot_matcher = on_regex(r"^(?:/p站\s+)?热门(?:\s+.*)?$", priority=1, block=True)
@@ -1293,7 +1294,7 @@ async def send_images_with_info(images: List[dict], title: str):
     except Exception as e:
         bot_logger.error(f"转换 images 为列表失败: {e}")
         return
-    
+
     for i, image in enumerate(images_list, 1):
         bot_logger.debug(f"处理第 {i} 张图片，image 类型: {type(image)}")
         
@@ -1338,6 +1339,12 @@ async def send_images_with_info(images: List[dict], title: str):
         # 🔥 使用专门的URL提取方法处理各种数据格式
         bot_logger.debug(f"第 {i} 张图片开始提取URL")
         urls = extract_image_urls(image)
+        if len(urls) > MAX_IMAGES_PER_MESSAGE:
+            bot_logger.info(
+                f"第 {i} 张图片包含 {len(urls)} 个URL，"
+                f"单次消息仅发送前 {MAX_IMAGES_PER_MESSAGE} 个"
+            )
+            urls = urls[:MAX_IMAGES_PER_MESSAGE]
         bot_logger.debug(f"第 {i} 张图片URL提取结果: {len(urls)} 个URL")
         
         try:
@@ -1346,7 +1353,7 @@ async def send_images_with_info(images: List[dict], title: str):
                 # 🔥 优化发送策略：合并图片和文字信息，减少网络请求
                 # 🔥 检查 len(images) 是否会导致 slice 错误
                 try:
-                    images_count = len(images)
+                    images_count = len(images_list)
                     bot_logger.debug(f"第 {i} 张图片计算总数成功: {images_count}")
                 except Exception as count_e:
                     bot_logger.error(f"第 {i} 张图片计算总数失败: {count_e}")
@@ -1382,7 +1389,7 @@ async def send_images_with_info(images: List[dict], title: str):
                 bot_logger.warning(f"第 {i} 张图片无URL，发送文字信息")
                 # 🔥 检查 len(images) 是否会导致 slice 错误
                 try:
-                    images_count = len(images)
+                    images_count = len(images_list)
                     bot_logger.debug(f"第 {i} 张图片计算总数成功: {images_count}")
                 except Exception as count_e:
                     bot_logger.error(f"第 {i} 张图片计算总数失败: {count_e}")
@@ -1405,7 +1412,7 @@ async def send_images_with_info(images: List[dict], title: str):
                 bot_logger.info(f"第 {i} 张图片开始降级处理")
                 # 🔥 检查 len(images) 是否会导致 slice 错误
                 try:
-                    images_count = len(images)
+                    images_count = len(images_list)
                     bot_logger.info(f"第 {i} 张图片降级处理计算总数成功: {images_count}")
                 except Exception as count_e:
                     bot_logger.error(f"第 {i} 张图片降级处理计算总数失败: {count_e}")
