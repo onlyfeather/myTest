@@ -1,0 +1,127 @@
+{
+  "chat": [
+    {
+      "name": "low_affinity_distance",
+      "role": "ling",
+      "favorability": 10,
+      "user_name": "测试用户",
+      "user_text": "摸摸头",
+      "expected_prompt_terms": ["current_user_input", "优先级高于示例", "不替用户决定动作", "保持明显距离"],
+      "expected_reply_terms": ["别", "碰"],
+      "sample_response": {"reply": "*玲立刻偏头躲开，皱着眉瞪你* 别随便碰我，变态。你以为这种动作很自然吗？", "delta": -1}
+    },
+    {
+      "name": "mid_affinity_companion_request",
+      "role": "ling",
+      "favorability": 60,
+      "user_name": "测试用户",
+      "user_text": "今天可以陪我一会儿吗？",
+      "expected_prompt_terms": ["请求陪伴", "memory_summary 只提供长期背景", "必须正面回应这个请求本身", "至少要承接 current_user_input 的一个核心语义", "不要凭空改写用户的话"],
+      "expected_reply_terms": ["陪", "一会儿"],
+      "sample_response": {"reply": "*玲转动骰子的动作慢了下来，别开脸小声哼了一下* 真麻烦……不过你都这么说了，我就陪你一会儿。只是一会儿，别误会。", "delta": 2}
+    },
+    {
+      "name": "high_affinity_soften",
+      "role": "ling",
+      "favorability": 90,
+      "user_name": "测试用户",
+      "user_text": "今天可以多陪我一会儿吗？",
+      "expected_prompt_terms": ["态度明显亲近", "current_user_input", "只返回一个合法 json object"],
+      "expected_reply_terms": ["陪", "亲爱的"],
+      "sample_response": {"reply": "*玲把骰子攥在掌心，耳尖微微泛红* 真是的，亲爱的就会说这种让我没法拒绝的话……可以啦，我会多陪你一会儿。", "delta": 2}
+    },
+    {
+      "name": "shizuku_cold_care",
+      "role": "shizuku",
+      "favorability": 55,
+      "user_name": "测试用户",
+      "user_text": "我今天有点累。",
+      "expected_prompt_terms": ["current_user_input", "不要把 few_shot_examples 当作刚刚发生的对话", "至少要承接 current_user_input 的一个核心语义", "角色真实感"],
+      "expected_reply_terms": ["休息", "主人"],
+      "sample_response": {"reply": "*雫将茶杯轻放到你手边，语气依旧平稳* 主人，疲惫时继续逞强并不高效。请先休息十分钟，我会把后续安排整理好。", "delta": 1}
+    },
+    {
+      "name": "shizuku_flustered_praise",
+      "role": "shizuku",
+      "favorability": 80,
+      "user_name": "测试用户",
+      "user_text": "你其实很可爱。",
+      "expected_prompt_terms": ["current_user_input", "不要凭空改写用户的话", "不输出 Markdown"],
+      "expected_reply_terms": ["可爱", "请不要"],
+      "sample_response": {"reply": "*雫倒茶的手停了半秒，随即垂下眼帘* 主人，请不要把观察力浪费在“可爱”这种评价上。以及……请不要一直看着我的脸。", "delta": 1}
+    },
+    {
+      "name": "dirty_json_recovery",
+      "role": "ling",
+      "favorability": 50,
+      "user_name": "测试用户",
+      "user_text": "你好",
+      "expected_prompt_terms": ["schema", "json object", "current_user_input"],
+      "expected_reply_terms": ["你好"],
+      "sample_response": "```json\n{\"reply\":\"*玲瞥了你一眼* 你好。突然这么正经，反而有点可疑。\",\"delta\":0}\n```"
+    },
+    {
+      "name": "delta_out_of_range_fallback",
+      "role": "ling",
+      "favorability": 50,
+      "user_name": "测试用户",
+      "user_text": "夸夸我",
+      "expected_prompt_terms": ["delta 必须是 -3 到 3", "current_user_input"],
+      "expected_reply_terms": ["夸"],
+      "sample_response": {"reply": "*玲别开脸，声音小了一点* 勉、勉强算你今天有点努力吧。只夸这一次。", "delta": 9},
+      "expected_delta": 0
+    }
+  ],
+  "dice": [
+    {
+      "name": "dice_success_no_control",
+      "role": "ling",
+      "favorability": 60,
+      "user_name": "测试用户",
+      "roll": {"event": "侦查", "target": 60, "max": 100, "final_roll": 72, "final_status": "成功"},
+      "expected_prompt_terms": ["不能改变或暗示改变骰点", "避免使用“保佑”", "不宣称操控骰点", "delta 固定为 0"],
+      "expected_reply_terms": ["成功"],
+      "sample_response": {"reply": "*玲哼了一声，指尖轻轻拨过骰子* 成功。勉强算你有点本事，别得意太早。", "delta": 0}
+    },
+    {
+      "name": "dice_failure_short",
+      "role": "ling",
+      "favorability": 35,
+      "user_name": "测试用户",
+      "roll": {"event": "开锁", "target": 60, "max": 100, "final_roll": 20, "final_status": "失败"},
+      "expected_prompt_terms": ["点评短一点", "只返回一个合法 json object", "好感度只影响称呼"],
+      "expected_reply_terms": ["失败"],
+      "sample_response": {"reply": "*玲瞥了眼结果，没忍住轻哼* 失败。果然不能对你期待太高，笨蛋。", "delta": 0}
+    },
+    {
+      "name": "dice_critical_success",
+      "role": "shizuku",
+      "favorability": 75,
+      "user_name": "测试用户",
+      "roll": {"event": "说服", "target": 60, "max": 100, "final_roll": 100, "final_status": "大成功"},
+      "expected_prompt_terms": ["大成功", "只根据给定骰点结果", "不宣称操控骰点"],
+      "expected_reply_terms": ["大成功"],
+      "sample_response": {"reply": "*雫平静地记下结果，声音低得几乎像认可* 大成功。主人今日最体面的一刻，值得保存。", "delta": 0}
+    },
+    {
+      "name": "dice_critical_failure",
+      "role": "ling",
+      "favorability": 20,
+      "user_name": "测试用户",
+      "roll": {"event": "潜行", "target": 60, "max": 100, "final_roll": 1, "final_status": "大失败"},
+      "expected_prompt_terms": ["大失败", "不能改变或暗示改变骰点", "delta 固定为 0"],
+      "expected_reply_terms": ["大失败"],
+      "sample_response": {"reply": "*玲愣了一下，随即毫不客气地笑出声* 大失败。你是故意给我看这种惨状的吗，变态？", "delta": 0}
+    },
+    {
+      "name": "dice_random_no_target",
+      "role": "ling",
+      "favorability": 70,
+      "user_name": "测试用户",
+      "roll": {"event": "随机数", "target": null, "max": 100, "final_roll": 88, "final_status": "无判定"},
+      "expected_prompt_terms": ["只根据给定骰点结果", "点评短一点", "delta 固定为 0"],
+      "expected_reply_terms": ["88"],
+      "sample_response": {"reply": "*玲看着 88，嘴角微微扬起* 数字不错嘛，别误会，只是骰子今天比较给面子。", "delta": 0}
+    }
+  ]
+}

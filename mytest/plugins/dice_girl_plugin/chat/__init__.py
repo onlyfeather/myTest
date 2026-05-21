@@ -1,4 +1,4 @@
-from .chat import (
+from .memory import (
     MemoryKey,
     MemoryManager,
     MemoryStore,
