@@ -11,6 +11,8 @@ class DiceGirlConfig(BaseModel):
     ai_api_key: str = ""
     ai_base_url: str = "https://api.openai.com/v1"
     ai_model: str = "gpt-4o-mini"
+    ai_timeout: float = 120.0
+    ai_json_mode: bool = False
     data_dir: Optional[Path] = None
 
 
@@ -40,6 +42,18 @@ def _load_config() -> DiceGirlConfig:
             return value
         return str(value).strip().lower() not in {"0", "false", "no", "off", "关闭"}
 
+    def get_config_float(name: str, default: float) -> float:
+        value = getattr(raw_config, name.lower(), None)
+        if value is None:
+            value = os.getenv(name.upper())
+
+        if value in ("", None):
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     return DiceGirlConfig(
         ai_enabled=get_config_bool("dice_girl_ai_enabled", True),
         ai_api_key=get_config_value(
@@ -59,6 +73,8 @@ def _load_config() -> DiceGirlConfig:
             "openai_model",
             default="gpt-4o-mini",
         ),
+        ai_timeout=get_config_float("dice_girl_ai_timeout", 120.0),
+        ai_json_mode=get_config_bool("dice_girl_ai_json_mode", False),
         data_dir=get_config_value("dice_girl_data_dir") or None,
     )
 

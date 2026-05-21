@@ -5,15 +5,37 @@ from .client import auth_headers, chat_url
 
 
 def build_json_payload(model: str, messages: list, temperature: float) -> dict:
-    return {
+    payload = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
-        "response_format": {"type": "json_object"},
     }
+    if config.ai_json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def _messages_char_count(messages: list) -> int:
+    total = 0
+    for message in messages:
+        if isinstance(message, dict):
+            total += len(str(message.get("content", "")))
+        else:
+            total += len(str(message))
+    return total
 
 
 async def post_chat_completion(client, payload: dict, log_prefix: str):
+    messages = payload.get("messages") or []
+    logger.info(
+        "{} request payload: model={}, messages={}, chars={}, json_mode={}",
+        log_prefix,
+        payload.get("model"),
+        len(messages),
+        _messages_char_count(messages),
+        "response_format" in payload,
+    )
+
     resp = await client.post(
         chat_url(),
         json=payload,

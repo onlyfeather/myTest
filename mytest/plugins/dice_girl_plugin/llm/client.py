@@ -42,10 +42,12 @@ def truncate_text(value: str, limit: int = 800) -> str:
 async def _startup_ai_client():
     global _ai_client
     logger.debug(
-        "[AI] Startup config: enabled={}, base_url={}, model={}, api_key_set={}",
+        "[AI] Startup config: enabled={}, base_url={}, model={}, timeout={}, json_mode={}, api_key_set={}",
         _ai_runtime_enabled,
         config.ai_base_url,
         config.ai_model,
+        config.ai_timeout,
+        config.ai_json_mode,
         has_ai_api_key(),
     )
     if not is_ai_enabled():
@@ -55,7 +57,7 @@ async def _startup_ai_client():
         logger.warning(
             "[AI] API key is empty. Set DICE_GIRL_AI_API_KEY in the active env file."
         )
-    _ai_client = httpx.AsyncClient(timeout=40.0)
+    _ai_client = httpx.AsyncClient(timeout=config.ai_timeout)
 
 
 @get_driver().on_shutdown
@@ -73,5 +75,5 @@ async def get_ai_client():
         yield _ai_client
         return
 
-    async with httpx.AsyncClient(timeout=40.0) as client:
+    async with httpx.AsyncClient(timeout=config.ai_timeout) as client:
         yield client
