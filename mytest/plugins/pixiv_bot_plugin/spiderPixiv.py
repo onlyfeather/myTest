@@ -64,6 +64,7 @@ class PixivSpider:
         
         # 圈名到作者ID的映射缓存
         self.alias_to_user_id: Dict[str, str] = {}  # {alias: user_id}
+        self.normalized_alias_to_user_id: Dict[str, str] = {}  # {normalized_alias: user_id}
         
         # 默认喜好tag池
         self.default_preferred_tags = {
@@ -87,6 +88,7 @@ class PixivSpider:
             "blocked_tags": self.blocked_tags,
             "favorite_authors": self.favorite_authors,
             "alias_to_user_id": self.alias_to_user_id,
+            "normalized_alias_to_user_id": self.normalized_alias_to_user_id,
             "translation_cache": self.translation_cache,
         }
 
@@ -100,7 +102,12 @@ class PixivSpider:
         self.blocked_tags = state.get("blocked_tags", set())
         self.favorite_authors = state.get("favorite_authors", {})
         self.alias_to_user_id = state.get("alias_to_user_id", {})
+        self.normalized_alias_to_user_id = state.get("normalized_alias_to_user_id", {})
         self.translation_cache = state.get("translation_cache", {})
+
+    @staticmethod
+    def _normalize_alias(alias: str) -> str:
+        return " ".join(str(alias).strip().casefold().split())
         
     def save_cookie(self, cookie_string: str, user_id: Optional[str] = None, keep_existing_id: bool = True) -> bool:
         """
@@ -679,18 +686,25 @@ class PixivSpider:
         """更新圈名到作者ID的映射缓存"""
         try:
             self.alias_to_user_id.clear()
+            self.normalized_alias_to_user_id.clear()
             
             for user_id, author_info in self.favorite_authors.items():
                 aliases = author_info.get('aliases', [])
                 for alias in aliases:
                     if alias and alias.strip():
                         clean_alias = alias.strip()
+                        normalized_alias = self._normalize_alias(clean_alias)
                         # 检查圈名冲突
                         if clean_alias in self.alias_to_user_id:
                             existing_user_id = self.alias_to_user_id[clean_alias]
                             if existing_user_id != user_id:
                                 logger.warning(f"圈名 '{clean_alias}' 冲突 - 已存在作者 {existing_user_id}，将被作者 {user_id} 覆盖")
+                        if normalized_alias in self.normalized_alias_to_user_id:
+                            existing_user_id = self.normalized_alias_to_user_id[normalized_alias]
+                            if existing_user_id != user_id:
+                                logger.warning(f"规范化圈名 '{clean_alias}' 冲突 - 已存在作者 {existing_user_id}，将被作者 {user_id} 覆盖")
                         self.alias_to_user_id[clean_alias] = user_id
+                        self.normalized_alias_to_user_id[normalized_alias] = user_id
             
             logger.debug(f"圈名映射已更新: {len(self.alias_to_user_id)} 个映射")
         except Exception as e:
@@ -709,6 +723,7 @@ class PixivSpider:
             if not alias:
                 logger.warning("圈名不能为空")
                 return False
+            normalized_alias = self._normalize_alias(alias)
             
             if user_id not in self.favorite_authors:
                 logger.info(f"作者 {user_id} 不在喜欢列表中")
@@ -719,15 +734,21 @@ class PixivSpider:
                 existing_user_id = self.alias_to_user_id[alias]
                 logger.info(f"圈名 '{alias}' 已被作者 {existing_user_id} 使用")
                 return False
+            if normalized_alias in self.normalized_alias_to_user_id and self.normalized_alias_to_user_id[normalized_alias] != user_id:
+                existing_user_id = self.normalized_alias_to_user_id[normalized_alias]
+                logger.info(f"圈名 '{alias}' 与作者 {existing_user_id} 的既有圈名冲突")
+                return False
             
             # 添加圈名
             author_info = self.favorite_authors[user_id]
             aliases = author_info.get('aliases', [])
+            normalized_aliases = {self._normalize_alias(item) for item in aliases}
             
-            if alias not in aliases:
+            if normalized_alias not in normalized_aliases:
                 aliases.append(alias)
                 author_info['aliases'] = aliases
                 self.alias_to_user_id[alias] = user_id
+                self.normalized_alias_to_user_id[normalized_alias] = user_id
                 if not self.save_favorite_authors():
                     return False
                 logger.info(f"已为作者 {user_id} 添加圈名: {alias}")
@@ -753,6 +774,7 @@ class PixivSpider:
             if not alias:
                 logger.warning("圈名不能为空")
                 return False
+            normalized_alias = self._normalize_alias(alias)
             
             if user_id not in self.favorite_authors:
                 logger.info(f"作者 {user_id} 不在喜欢列表中")
@@ -761,18 +783,24 @@ class PixivSpider:
             # 移除圈名
             author_info = self.favorite_authors[user_id]
             aliases = author_info.get('aliases', [])
+            matched_alias = next(
+                (item for item in aliases if self._normalize_alias(item) == normalized_alias),
+                None,
+            )
             
-            if alias in aliases:
-                aliases.remove(alias)
+            if matched_alias:
+                aliases.remove(matched_alias)
                 author_info['aliases'] = aliases
                 
                 # 从映射中移除
-                if alias in self.alias_to_user_id and self.alias_to_user_id[alias] == user_id:
-                    del self.alias_to_user_id[alias]
+                if matched_alias in self.alias_to_user_id and self.alias_to_user_id[matched_alias] == user_id:
+                    del self.alias_to_user_id[matched_alias]
+                if normalized_alias in self.normalized_alias_to_user_id and self.normalized_alias_to_user_id[normalized_alias] == user_id:
+                    del self.normalized_alias_to_user_id[normalized_alias]
                 
                 if not self.save_favorite_authors():
                     return False
-                logger.info(f"已为作者 {user_id} 移除圈名: {alias}")
+                logger.info(f"已为作者 {user_id} 移除圈名: {matched_alias}")
                 return True
             else:
                 logger.info(f"圈名 '{alias}' 不存在")
@@ -789,7 +817,9 @@ class PixivSpider:
             if not alias:
                 return None
             
-            return self.alias_to_user_id.get(alias)
+            return self.alias_to_user_id.get(alias) or self.normalized_alias_to_user_id.get(
+                self._normalize_alias(alias)
+            )
         except Exception as e:
             logger.debug(f"通过圈名搜索作者失败: {e}")
             return None
