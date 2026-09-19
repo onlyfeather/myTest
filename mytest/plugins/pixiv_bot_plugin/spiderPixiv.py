@@ -1662,7 +1662,7 @@ class PixivSpider:
                 return url
             
             # 将 i.pximg.net 替换为 i.yuki.sh
-            replaced_url = url.replace('i.pximg.net', 'i.yuki.sh')
+            replaced_url = url.replace('i.pximg.net', 'i.isekai-inn.uno')
             
             # 如果发生了替换，记录日志
             if replaced_url != url:
