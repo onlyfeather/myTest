@@ -73,6 +73,19 @@ novelai_settings = register(
                 help="自动加在描述前面",
             ),
             SettingField(
+                "default_artists",
+                "默认画师串",
+                type="textarea",
+                default="",
+                placeholder="artist:wlop, {artist:ask (askzy)}, 0.8::artist:mika pikazo::",
+                help="没设置过自己画师串的人都用这个，加在质量词后面；留空表示不加。"
+                "群友可以用 /nai -画师 描述 换成自己的（会记住），用 /nai画师 默认 恢复",
+            ),
+            SettingField("reference_strength", "角色参考强度", type="float", default=1.0, minimum=0, maximum=1,
+                         help="越高越贴近参考图；太高时表情和姿势也会跟参考图一样"),
+            SettingField("reference_fidelity", "角色参考保真度", type="float", default=1.0, minimum=0, maximum=1,
+                         help="越高越难被描述改掉角色特征"),
+            SettingField(
                 "negative",
                 "负面提示词",
                 type="textarea",

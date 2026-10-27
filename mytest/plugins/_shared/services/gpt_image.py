@@ -60,6 +60,18 @@ async def extract_image(data: Any, proxy: str, timeout: float) -> bytes:
     raise ServiceError(f"{NAME} 没有返回图片")
 
 
+MAX_REFERENCES = 16
+
+
+def build_edit_form(
+    payload: dict[str, Any], references: list[bytes]
+) -> tuple[dict[str, str], list[tuple[str, tuple[str, bytes, str]]]]:
+    """/images/edits 用 multipart：参数是表单字段，参考图是重复的 image[] 文件字段。"""
+    data = {key: str(value) for key, value in payload.items()}
+    files = [("image[]", (f"reference_{i}.png", img, "image/png")) for i, img in enumerate(references, 1)]
+    return data, files
+
+
 async def generate(
     prompt: str,
     *,
@@ -71,13 +83,22 @@ async def generate(
     moderation: str = "",
     proxy: str = "",
     timeout: float = 300.0,
+    references: list[bytes] | None = None,
 ) -> bytes:
+    """references 不为空时走 /images/edits，模型会参考这些图片来画。"""
     if not api_key.strip():
         raise ServiceError("还没有配置 GPT Image 的 API Key")
+    references = references or []
+    if len(references) > MAX_REFERENCES:
+        raise ServiceError(f"参考图最多 {MAX_REFERENCES} 张")
     payload = build_payload(prompt, model=model, size=size, quality=quality, moderation=moderation)
-    url = f"{base_url.rstrip('/')}/images/generations"
+    headers = {"Authorization": f"Bearer {api_key.strip()}"}
     async with http_client(proxy, timeout) as client:
-        resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {api_key.strip()}"})
+        if references:
+            data, files = build_edit_form(payload, references)
+            resp = await client.post(f"{base_url.rstrip('/')}/images/edits", data=data, files=files, headers=headers)
+        else:
+            resp = await client.post(f"{base_url.rstrip('/')}/images/generations", json=payload, headers=headers)
     if resp.status_code != 200:
         message = describe_http_error(NAME, resp)
         if "moderation" in resp.text.lower() or "safety" in resp.text.lower():

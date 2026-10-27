@@ -1,3 +1,8 @@
+from nonebot import require
+
+require("nonebot_plugin_localstore")
+require("nonebot_plugin_waiter")
+
 from nonebot.plugin import PluginMetadata
 
 from .._shared.settings import settings_store

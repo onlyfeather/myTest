@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import random
 import zipfile
@@ -47,6 +48,29 @@ SIZES = {
 
 
 @dataclass
+class CharacterReference:
+    """角色参考（Precise Reference 里的 Character Reference）：让生成的角色长得像参考图。
+
+    NovelAI 的另一种用图方式是 Vibe Transfer（氛围参考，学画面的整体感觉），这里不用。
+    """
+
+    image: bytes  # 已经补边到 REFERENCE_CANVASES 之一的 PNG
+    with_style: bool = False  # True 时连画风一起参考（character&style）
+    strength: float = 1.0
+    fidelity: float = 1.0
+
+
+# 角色参考只接受这三种尺寸，其他尺寸的图要等比缩放后补黑边。
+REFERENCE_CANVASES = ((1024, 1536), (1536, 1024), (1472, 1472))
+# 官方文档：Precise Reference 只在 V4.5 模型上可用。
+REFERENCE_MODELS = ("nai-diffusion-4-5-full", "nai-diffusion-4-5-curated")
+
+
+def supports_reference(model: str) -> bool:
+    return model in REFERENCE_MODELS
+
+
+@dataclass
 class NovelAIRequest:
     prompt: str
     negative: str
@@ -57,6 +81,7 @@ class NovelAIRequest:
     scale: float
     sampler: str
     seed: int | None = None
+    reference: CharacterReference | None = None
 
 
 OFFICIAL_HOST = "https://image.novelai.net"
@@ -120,6 +145,28 @@ def build_payload(req: NovelAIRequest) -> dict[str, Any]:
         )
     else:
         parameters.update({"sm": False, "sm_dyn": False})
+    if req.reference is not None:
+        if not supports_reference(req.model):
+            raise ServiceError("角色参考图只支持 V4.5 模型（V4.5 Full / V4.5 Curated），请在 WebUI 里换模型")
+        ref = req.reference
+        parameters.update(
+            {
+                "director_reference_images": [base64.b64encode(ref.image).decode()],
+                "director_reference_descriptions": [
+                    {
+                        "caption": {
+                            "base_caption": "character&style" if ref.with_style else "character",
+                            "char_captions": [],
+                        },
+                        "legacy_uc": False,
+                    }
+                ],
+                "director_reference_information_extracted": [1],
+                "director_reference_strength_values": [ref.strength],
+                # 网页上的 Fidelity 滑块：接口里传的是 1 - fidelity。
+                "director_reference_secondary_strength_values": [round(1 - ref.fidelity, 4)],
+            }
+        )
     return {"input": req.prompt, "model": req.model, "action": "generate", "parameters": parameters}
 
 

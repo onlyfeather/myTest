@@ -29,21 +29,55 @@ TRANSLATE_PROMPT = """你是 NovelAI / Danbooru 提示词助手。把用户的�
 - 不超过 60 个 tag。"""
 
 
+# 引导式参数：只有写了这些才会追问，否则直接出图。
+FLAG_REFERENCE = "参考"  # 要一张参考图（NovelAI 用作角色参考）
+FLAG_ARTIST = "画师"  # 询问新的画师串（仅 NovelAI）
+FLAG_STYLE = "画风"  # 角色参考时连画风一起参考（仅 NovelAI）
+FLAGS = {
+    FLAG_REFERENCE: FLAG_REFERENCE,
+    "参考图": FLAG_REFERENCE,
+    "ref": FLAG_REFERENCE,
+    FLAG_ARTIST: FLAG_ARTIST,
+    "画师串": FLAG_ARTIST,
+    "artist": FLAG_ARTIST,
+    FLAG_STYLE: FLAG_STYLE,
+    "style": FLAG_STYLE,
+}
+# 只认独立的「-参数」，不会误伤描述里的连字符（如 x-ray、1-2 个人）。
+_FLAG_RE = re.compile(r"(?:^|\s)[-－—](" + "|".join(sorted(map(re.escape, FLAGS), key=len, reverse=True)) + r")(?=\s|$)",
+                      re.IGNORECASE)
+
+
 @dataclass
 class DrawRequest:
     size: str
     prompt: str
+    flags: frozenset[str] = frozenset()
+
+    @property
+    def wants_reference(self) -> bool:
+        return FLAG_REFERENCE in self.flags
+
+    @property
+    def wants_artist(self) -> bool:
+        return FLAG_ARTIST in self.flags
+
+    @property
+    def with_style(self) -> bool:
+        return FLAG_STYLE in self.flags
 
 
 def parse_request(text: str) -> DrawRequest:
-    """「横图 一只猫」→ size=横图, prompt=一只猫。"""
-    text = text.strip()
+    """「-参考 横图 一只猫」→ flags={参考}, size=横图, prompt=一只猫。参数可以写在任意位置。"""
+    flags = frozenset(FLAGS[m.group(1).lower()] for m in _FLAG_RE.finditer(text))
+    text = _FLAG_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
     size = "竖图"
     first, _, rest = text.partition(" ")
     if first in SIZE_WORDS:
         size = SIZE_WORDS[first]
         text = rest.strip()
-    return DrawRequest(size=size, prompt=text)
+    return DrawRequest(size=size, prompt=text, flags=flags)
 
 
 def has_chinese(text: str) -> bool:
