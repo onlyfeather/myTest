@@ -1,16 +1,11 @@
 from dataclasses import dataclass
 
-from ...persona import persona_manager
-from ...persona.lore import LoreEntry, format_lore, match_lore
 from ...persona.schema import (
     PRIVATE,
     DutyState,
-    SceneProfile,
     duty_state,
-    examples_for,
     persona_for_scene,
     role_name,
-    scene_profile,
     user_call_for,
 )
 
@@ -31,10 +26,6 @@ class CharacterPromptContext:
     user_call: str
     attitude: str
     relationship_directive: str
-    lore_context: str
-    examples: str
-    memory_summary: str
-    scene: SceneProfile
     duty: DutyState | None = None
 
 
@@ -59,28 +50,6 @@ def format_prompt_mapping(items: dict) -> str:
     return "\n".join(f"- {key}: {value}" for key, value in items.items() if value)
 
 
-def format_examples(raw_examples: list) -> str:
-    if not raw_examples:
-        return "- 无示例。"
-
-    examples = []
-    current = []
-    for item in raw_examples:
-        if item == "<START>":
-            if current:
-                examples.append("\n".join(current))
-                current = []
-            continue
-        current.append(str(item))
-    if current:
-        examples.append("\n".join(current))
-
-    if not examples:
-        return "\n".join(str(item) for item in raw_examples)
-
-    return "\n\n".join(examples[:2])
-
-
 def relationship_directive_for(current_fav: int) -> str:
     """角色阶段里没有写 directive 时的通用兜底。"""
     if current_fav <= 20:
@@ -92,35 +61,17 @@ def relationship_directive_for(current_fav: int) -> str:
     return "态度明显亲近，允许主动靠近和更柔软的称呼；仍保持角色核心性格，不要变成无条件顺从。"
 
 
-def _role_id_of(role_data: dict) -> str:
-    for role_id, role in persona_manager.data.get("roles", {}).items():
-        if role is role_data:
-            return role_id
-    return ""
-
-
 def build_character_context(
     role_data,
     current_fav: int,
-    user_text: str = "",
-    memory_summary: str = "",
     *,
     scene: str = PRIVATE,
-    role_id: str = "",
-    lore_entries: list[LoreEntry] | None = None,
 ) -> CharacterPromptContext:
-    """组装角色信息。scene 决定是否带上 private_only 的设定和回复风格。
-
-    lore_entries 为 None 时，用文件世界书按 user_text 自动匹配；
-    群聊调用方会自己合并群梗后传进来。
-    """
+    """组装角色信息。scene 决定是否带上 private_only 的设定，以及上班 / 下班状态。"""
     meta = role_data.get("meta", {})
     persona = persona_for_scene(role_data, scene)
     stage = get_stage_config(role_data, current_fav)
-    role_id = role_id or _role_id_of(role_data)
     duty = duty_state(role_data, scene, current_fav)
-    if lore_entries is None:
-        lore_entries = match_lore(persona_manager.lore_entries, user_text, role_id, scene)
 
     return CharacterPromptContext(
         role_name=role_name(role_data),
@@ -139,9 +90,5 @@ def build_character_context(
         ),
         attitude=stage.get("attitude", "态度未定义"),
         relationship_directive=stage.get("directive") or relationship_directive_for(current_fav),
-        lore_context=format_lore(lore_entries),
-        examples=format_examples(examples_for(role_data, duty)),
-        memory_summary=memory_summary.strip() or "- 暂无长期记忆摘要。",
-        scene=scene_profile(role_data, scene),
         duty=duty,
     )

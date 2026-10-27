@@ -10,7 +10,7 @@ def build_dice_prompt(
     user_text: str = "",
     scene: str = PRIVATE,
 ) -> str:
-    ctx = build_character_context(role_data, current_fav, user_text, scene=scene)
+    ctx = build_character_context(role_data, current_fav, scene=scene)
     dice_reactions = role_data.get("dice_reactions", {})
 
     prompt = f"""

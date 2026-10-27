@@ -3,7 +3,7 @@ import json
 from nonebot import logger
 from pydantic import ValidationError
 
-from .schemas import validate_chat_reply, validate_dice_reaction
+from .schemas import validate_dice_reaction
 
 
 def clean_and_parse_json(content: str):
@@ -37,18 +37,6 @@ def clean_and_parse_json(content: str):
     return {"reply": clean_text, "delta": 0}
 
 
-def parse_chat_reply(content: str) -> dict:
-    try:
-        return validate_chat_reply(clean_and_parse_json(content))
-    except ValidationError as e:
-        logger.warning("[AI] Chat response schema validation failed: {}", e)
-        fallback = clean_and_parse_json(content)
-        reply_text = str(fallback.get("reply") or "").strip()
-        if not reply_text:
-            reply_text = "*似乎走神了，呆呆地看着你，没有说话*"
-        return {"reply": reply_text, "delta": 0}
-
-
 def parse_dice_reaction(content: str) -> dict:
     try:
         return validate_dice_reaction(clean_and_parse_json(content))
@@ -67,13 +55,6 @@ def post_process_reply(text: str, user_name: str, role_name: str) -> str:
         .replace("{{user}}", user_name)
         .replace("{char}", role_name)
         .replace("{{char}}", role_name)
-    )
-
-
-def build_offline_chat_reply(user_name: str) -> str:
-    return (
-        f"【离线旁白】{user_name} 的发言已被记录。当前 AI 不在线，"
-        f"所以系统决定用沉默维持一种廉价但稳定的神秘感。"
     )
 
 

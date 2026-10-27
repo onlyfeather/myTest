@@ -14,27 +14,6 @@ class DiceGirlConfig(BaseModel):
     ai_timeout: float = 120.0
     ai_json_mode: bool = False
     data_dir: Optional[Path] = None
-    # 群员档案（印象、昵称、记住的事）的隔离方式：group=每个群独立，global=所有群共享。
-    member_scope: str = "group"
-    # 好感度的隔离方式：global=私聊和所有群共享（原有行为），group=每个群独立。
-    affinity_scope: str = "global"
-    # 群聊上下文：送进 prompt 的条数、数据库保留条数和保留时长。
-    group_context_size: int = 30
-    group_keep_messages: int = 200
-    group_retention_hours: int = 72
-    # 世界书话题触发的限制：同一词条在同一群的冷却秒数、每群每小时最多主动接话次数。
-    topic_cooldown_seconds: int = 1800
-    topic_replies_per_hour: int = 3
-    # 群记忆：攒够这么多条新消息整理一次；冷清的群在消息最旧超过 idle 小时后也整理。
-    digest_every_messages: int = 40
-    digest_idle_hours: int = 6
-    group_events_keep: int = 300
-    # Embedding（OpenAI 兼容接口，例如硅基流动）。不填 key 时只用关键词检索。
-    embedding_api_key: str = ""
-    embedding_base_url: str = "https://api.siliconflow.cn/v1"
-    embedding_model: str = "BAAI/bge-m3"
-    embedding_timeout: float = 20.0
-
 
 
 def _load_config() -> DiceGirlConfig:
@@ -97,30 +76,7 @@ def _load_config() -> DiceGirlConfig:
         ai_timeout=get_config_float("dice_girl_ai_timeout", 120.0),
         ai_json_mode=get_config_bool("dice_girl_ai_json_mode", False),
         data_dir=get_config_value("dice_girl_data_dir") or None,
-        member_scope=_choice(get_config_value("dice_girl_member_scope"), ("group", "global"), "group"),
-        affinity_scope=_choice(get_config_value("dice_girl_affinity_scope"), ("global", "group"), "global"),
-        group_context_size=int(get_config_float("dice_girl_group_context_size", 30)),
-        group_keep_messages=int(get_config_float("dice_girl_group_keep_messages", 200)),
-        group_retention_hours=int(get_config_float("dice_girl_group_retention_hours", 72)),
-        topic_cooldown_seconds=int(get_config_float("dice_girl_topic_cooldown_seconds", 1800)),
-        topic_replies_per_hour=int(get_config_float("dice_girl_topic_replies_per_hour", 3)),
-        digest_every_messages=max(10, int(get_config_float("dice_girl_digest_every_messages", 40))),
-        digest_idle_hours=int(get_config_float("dice_girl_digest_idle_hours", 6)),
-        group_events_keep=int(get_config_float("dice_girl_group_events_keep", 300)),
-        embedding_api_key=get_config_value("dice_girl_embedding_api_key", "siliconflow_api_key"),
-        embedding_base_url=get_config_value(
-            "dice_girl_embedding_base_url", default="https://api.siliconflow.cn/v1"
-        ),
-        embedding_model=get_config_value("dice_girl_embedding_model", default="BAAI/bge-m3"),
-        embedding_timeout=get_config_float("dice_girl_embedding_timeout", 20.0),
     )
-
-
-def _choice(value: str, allowed: tuple[str, ...], default: str) -> str:
-    value = (value or "").strip().lower()
-    if value and value not in allowed:
-        logger.warning(f"[DiceGirl] 配置值 {value!r} 无效，可选 {allowed}，使用 {default!r}")
-    return value if value in allowed else default
 
 
 config = _load_config()

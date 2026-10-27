@@ -1,3 +1,3 @@
-from . import admin, chat, dice, group_admin, role, status
+from . import admin, dice, role, status
 
-__all__ = ["admin", "chat", "dice", "group_admin", "role", "status"]
+__all__ = ["admin", "dice", "role", "status"]

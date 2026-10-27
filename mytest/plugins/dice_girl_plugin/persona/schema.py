@@ -1,28 +1,13 @@
-"""角色卡的场景化读取。
+"""角色卡的场景化读取（投骰点评用）。
 
-角色卡结构向后兼容：没有新字段时，私聊和群聊都按原来的写法工作，
-只是群聊会用更短的默认回复长度。
-
-新增的可选字段：
-
-    "meta": {"aliases": ["凛音", "小凛"]}
+用到的字段：
     "duty": {"on": {...}, "off": {...}, "off_duty_min_favorability": 86,
              "night_off_duty_min_favorability": 60, "night_hours": [21, 6]}
     "stages": [{"user_call": "主人", "off_duty_call": "..."}]
-    "off_duty_examples": [...]
-    "modes": {
-        "private": {"reply_max_chars": 180, "actions": true, "rules": [...]},
-        "group":   {"reply_max_chars": 60,  "actions": false, "rules": [...],
-                    "stance": "她在群里的定位"}
-    }
-    "private_only": {
-        "behavior_habits": [...],
-        "emotional_triggers": {...},
-        "intimacy_boundaries": [...]
-    }
+    "private_only": {"behavior_habits": [...], "emotional_triggers": {...},
+                     "intimacy_boundaries": [...]}
 
-`private_only` 里的内容只在私聊注入；群聊里只有当世界书或用户输入明确提到时，
-才由世界书词条补充进来。
+`private_only` 里的内容只在私聊投骰时注入。
 """
 
 from __future__ import annotations
@@ -33,58 +18,9 @@ from datetime import datetime, timedelta, timezone
 PRIVATE = "private"
 GROUP = "group"
 
-_DEFAULT_MODES = {
-    PRIVATE: {"reply_max_chars": 180, "actions": True, "rules": [], "stance": ""},
-    GROUP: {
-        "reply_max_chars": 60,
-        "actions": False,
-        "rules": [
-            "像群里的普通成员一样说话，一般一两句话，不写大段动作描写。",
-            "只回应和你有关、或者在叫你的那个人，不要逐个点评群里所有人。",
-            "不要复述别人刚说过的话，不要总结群聊。",
-        ],
-        "stance": "",
-    },
-}
-
-
-@dataclass
-class SceneProfile:
-    scene: str
-    reply_max_chars: int
-    actions: bool
-    rules: list[str] = field(default_factory=list)
-    stance: str = ""
-
 
 def role_name(role: dict) -> str:
     return role.get("meta", {}).get("name") or role.get("name") or "骰娘"
-
-
-def role_aliases(role: dict) -> list[str]:
-    """角色的名字和所有别名，去重并保持顺序。"""
-    names = [role_name(role), *role.get("meta", {}).get("aliases", [])]
-    seen: set[str] = set()
-    result = []
-    for name in names:
-        clean = str(name).strip()
-        if clean and clean.casefold() not in seen:
-            seen.add(clean.casefold())
-            result.append(clean)
-    return result
-
-
-def scene_profile(role: dict, scene: str) -> SceneProfile:
-    base = dict(_DEFAULT_MODES[scene])
-    custom = role.get("modes", {}).get(scene, {})
-    base.update({k: v for k, v in custom.items() if v is not None})
-    return SceneProfile(
-        scene=scene,
-        reply_max_chars=int(base["reply_max_chars"]),
-        actions=bool(base["actions"]),
-        rules=list(base.get("rules") or []),
-        stance=str(base.get("stance") or ""),
-    )
 
 
 @dataclass
@@ -133,12 +69,6 @@ def duty_state(role: dict, scene: str, favorability: int, now: datetime | None =
         description=str(info.get("description") or ""),
         rules=list(info.get("rules") or []),
     )
-
-
-def examples_for(role: dict, state: DutyState | None) -> list:
-    if state and state.off_duty and role.get("off_duty_examples"):
-        return role["off_duty_examples"]
-    return role.get("examples", [])
 
 
 def user_call_for(stage: dict, state: DutyState | None, default: str) -> str:

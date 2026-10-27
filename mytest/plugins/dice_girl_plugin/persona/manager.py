@@ -6,11 +6,9 @@ from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
 
 from ..storage import get_group_role, get_private_role
-from .lore import LoreEntry, parse_file_entries
-from .schema import role_aliases, role_name
+from .schema import role_name
 
 PERSONA_PATH = Path(__file__).parent.parent / "personas.json"
-LORE_PATH = Path(__file__).parent.parent / "lorebooks.json"
 FALLBACK_ROLE = "rinne"
 
 
@@ -28,11 +26,8 @@ class PersonaManager:
             logger.error(f"[Persona] 读取 {path} 失败: {e}")
             return {}
 
-    def reload(self) -> tuple[int, int]:
-        """重新读取角色卡和世界书，返回 (角色数, 世界书词条数)。"""
+    def reload(self) -> None:
         self.data = self._load_json(PERSONA_PATH)
-        self.lore_entries: list[LoreEntry] = parse_file_entries(self._load_json(LORE_PATH))
-        return len(self.data.get("roles", {})), len(self.lore_entries)
 
     @property
     def default_role(self) -> str:
@@ -77,9 +72,6 @@ class PersonaManager:
         if role_key in roles:
             return role_name(roles[role_key])
         return "未知"
-
-    def get_role_aliases(self, role_key: str) -> list[str]:
-        return role_aliases(self.get_role(role_key))
 
 
 persona_manager = PersonaManager()

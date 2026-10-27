@@ -2,11 +2,10 @@ import re
 
 from nonebot import logger, on_command, on_regex
 from nonebot.adapters import Bot, Event
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
+from nonebot.adapters.onebot.v11 import Message
 from nonebot.params import CommandArg, RegexStr
 
 from ..dice import dice_logic
-from ..group.members import affinity_key
 from ..llm import get_dice_reaction
 from ..persona import persona_manager
 from ..storage import get_user_favorability
@@ -30,8 +29,7 @@ async def _handle_dice_text(bot: Bot, event: Event, raw_text: str):
         return
 
     max_val, target_val, event_name = parsed
-    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
-    current_fav = get_user_favorability(affinity_key(user_id, group_id), role_id=role_key)
+    current_fav = get_user_favorability(user_id, role_id=role_key)
 
     result = dice_logic.execute_roll(max_val, target_val, event_name)
 
