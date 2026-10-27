@@ -1,4 +1,6 @@
-"""工具定义。每个工具：校验参数 → 立即发一句凛音口吻的确认词 → 后台执行 → 把结果发到会话里。
+"""工具定义。每个工具：校验参数 → 后台执行 → 把结果发到会话里。
+
+确认的话由凛音自己说（MaiBot 的回复），这里不再发词库里的确认词。
 
 接口马上返回给凛音一句说明（「已经开始画了」），不让 MaiBot 等几十秒。
 耗时任务失败时，由 NoneBot 在会话里说明原因。
@@ -16,7 +18,6 @@ from nonebot import logger
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
 from .._shared import qq_images
-from .._shared.phrases import pick
 from .._shared.services.http import describe_exception
 
 _ID = re.compile(r"^\d{5,12}$")
@@ -192,9 +193,8 @@ async def tool_draw(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             return
         await send(ctx, Message(MessageSegment.image(result.image)), quote=True)
 
-    await send(ctx, pick("draw_reference" if use_reference else "draw", name=ctx.user_name))
     _spawn("draw", job())
-    return {"content": "已经开始画了，图片稍后会直接发到聊天里。现在不用再描述画面，简短回应即可。"}
+    return {"content": "已经开始画了，图片稍后会直接发到聊天里。用你自己的口吻回应对方，不用再描述画面。"}
 
 
 # ---------------------------------------------------------------- 自拍
@@ -218,9 +218,8 @@ async def tool_selfie(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             return
         await send(ctx, Message(MessageSegment.image(image)), quote=True)
 
-    await send(ctx, pick("selfie", name=ctx.user_name))
     _spawn("selfie", job())
-    return {"content": "自拍已经在准备了，照片稍后会直接发到聊天里。可以简短地说一句符合当下心情的话。"}
+    return {"content": "自拍已经在准备了，照片稍后会直接发到聊天里。用你自己的口吻说一句符合当下心情的话。"}
 
 
 # ---------------------------------------------------------------- 语音
@@ -266,7 +265,7 @@ async def tool_dice(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     header = f"1D{faces}={result['final_roll']}"
     if target is not None:
         header += f"/{target} 【{result['final_status']}】"
-    await send(ctx, f"{pick('dice', name=ctx.user_name)}\n{event_name}：{header}", quote=True)
+    await send(ctx, f"{event_name}：{header}", quote=True)
     return {
         "content": (
             f"已经把投骰结果发到聊天里了：{event_name} 1D{faces} 掷出 {result['final_roll']}"
@@ -312,9 +311,8 @@ async def tool_pixiv_search(ctx: ToolContext, args: dict[str, Any]) -> dict[str,
         except Exception as e:
             await send(ctx, f"书架上没找到……{describe_exception('Pixiv', e)}")
 
-    await send(ctx, pick("pixiv_search", name=ctx.user_name))
     _spawn("pixiv_search", job())
-    return {"content": f"正在 Pixiv 上找「{tags}」，图片稍后会直接发到聊天里。简短回应即可。"}
+    return {"content": f"正在 Pixiv 上找「{tags}」，图片稍后会直接发到聊天里。用你自己的口吻简短回应。"}
 
 
 async def tool_pixiv_daily(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -335,9 +333,8 @@ async def tool_pixiv_daily(ctx: ToolContext, args: dict[str, Any]) -> dict[str, 
         except Exception as e:
             await send(ctx, f"今天的推荐没能取来……{describe_exception('Pixiv', e)}")
 
-    await send(ctx, pick("pixiv_daily", name=ctx.user_name))
     _spawn("pixiv_daily", job())
-    return {"content": "今日推荐稍后会直接发到聊天里。简短回应即可。"}
+    return {"content": "今日推荐稍后会直接发到聊天里。用你自己的口吻简短回应。"}
 
 
 # ---------------------------------------------------------------- 注册表
