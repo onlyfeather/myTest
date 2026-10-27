@@ -120,43 +120,28 @@ def build_context(message: Any) -> dict[str, Any] | None:
 
 # ---------------------------------------------------------------- 工具描述（给凛音看）
 
+# MaiBot 1.3 只把 description 和参数描述交给模型，detailed_description 不会出现在提示词里，
+# 所以用法说明都写在这两处。「可以嘴上……但要真的做」是为了让人设里的傲娇不变成拒绝。
+ACT_IN_CHARACTER = "可以按你的性格吐槽或嫌麻烦，但要真的调用它去做；只有工具返回失败时才说做不到。"
+
 DRAW_DESC = (
-    "按对方的要求画一张插画。只在对方明确请你画图、帮忙画点什么时使用。"
-    "不要主动画，也不要用它画你自己（画自己用 rinne_selfie）。"
+    "画一张插画发到聊天里。对方请你画图、想要一张某某的图时调用。"
+    f"{ACT_IN_CHARACTER}画你自己用 rinne_selfie。"
 )
-DRAW_DETAIL = (
-    "prompt：把对方想要的画面整理成清楚的描述（人物、动作、场景、氛围），中文即可。\n"
-    "backend：二次元插画选 novelai；写实照片、带文字、复杂构图选 gpt；不确定就填 default。\n"
-    "size：竖图（默认，适合人物）、横图（风景）、方图。\n"
-    "use_reference：对方这条消息带了图、或者回复了一张图，并且说「照着这张画」时设为 true。"
+SELFIE_DESC = f"拍一张你自己（白鸟凛音）的自拍发到聊天里。对方想看你、要你的照片或自拍时调用。{ACT_IN_CHARACTER}"
+TTS_DESC = (
+    f"用语音说一句话发到聊天里。对方想听你的声音、让你用语音说时调用。{ACT_IN_CHARACTER}"
+    "说完不要再用文字重复同一句话。"
 )
-SELFIE_DESC = (
-    "拍一张你自己（白鸟凛音）的自拍发给对方。只在对方想看你、要你的照片或自拍时使用，不要主动用。"
+DICE_DESC = "投骰子、做检定、抽签、帮忙随机决定时调用。点数由工具真随机产生并直接发到聊天里，你不能自己编点数，只需要点评。"
+PIXIV_DESC = "在 Pixiv 上找插画发到聊天里。对方想看某个角色、某类题材的图时调用。"
+DAILY_DESC = "从 Pixiv 挑一张今日推荐发到聊天里。对方想看看今天的图、每日一图时调用。"
+
+SCENE_DESC = (
+    "自拍的情景。按聊天内容、现在的时间、你在工作中还是下班后，想一个自然的情景，"
+    "写清楚在哪、在做什么、穿什么、表情和姿势。"
+    "例：「下班后在房间里，穿着睡衣，侧马尾，抱着靠枕有点不耐烦地看镜头」。群聊里只能是工作中的样子"
 )
-SELFIE_DETAIL = (
-    "scene：根据聊天内容、现在的时间、你是在工作中还是下班后，想一个自然的情景，"
-    "写清楚你在哪、在做什么、穿什么、什么表情和姿势。例：「下班后在房间里，穿着睡衣，侧马尾，抱着靠枕有点不耐烦地看镜头」。"
-    "群聊里只能是工作中的样子。"
-)
-TTS_DESC = "用语音把一句话说给对方听。对方明确想听你的声音、让你用语音说时才用。"
-TTS_DETAIL = (
-    "text：你要说的话，用你自己的口吻，一两句即可，不要超过 100 字，不要写动作描写。"
-    "用了语音之后，不要再用文字把同一句话重复一遍。"
-)
-DICE_DESC = "投骰子、做检定（跑团、抽签、帮忙随机决定）。结果是真随机的，你不能编造点数。"
-DICE_DETAIL = (
-    "faces：骰子面数，默认 100。\n"
-    "target：检定的目标值，没有就不填。\n"
-    "event：检定的事件名，例如「侦查」「今天吃什么」。\n"
-    "结果会直接发到聊天里，你只需要点评。"
-)
-PIXIV_DESC = "在 Pixiv 上找插画发给对方。对方想看某个角色、某类题材的图时使用。"
-PIXIV_DETAIL = (
-    "tags：搜索标签，日文或英文的作品名、角色名效果最好，例如「初音ミク」「原神」「風景」。\n"
-    "count：几张，1-3，默认 1。\n"
-    "mode：random（默认，随机高收藏）、recent（最新）、popular（热门）。"
-)
-DAILY_DESC = "从 Pixiv 给对方挑一张今日推荐。对方说想看看今天的图、每日一图时使用。"
 
 
 def _msg_id_param() -> ToolParameterInfo:
@@ -262,16 +247,15 @@ class RinneToolsPlugin(MaiBotPlugin):
     @Tool(
         "rinne_draw",
         brief_description=DRAW_DESC,
-        detailed_description=DRAW_DETAIL,
         parameters=[
             _msg_id_param(),
-            ToolParameterInfo(name="prompt", param_type=ToolParamType.STRING, description="画面描述", required=True),
-            ToolParameterInfo(name="backend", param_type=ToolParamType.STRING, description="用哪个画",
+            ToolParameterInfo(name="prompt", param_type=ToolParamType.STRING, description="想要的画面：人物、动作、场景、氛围，中文即可", required=True),
+            ToolParameterInfo(name="backend", param_type=ToolParamType.STRING, description="二次元插画选 novelai；写实照片、带文字、复杂构图选 gpt；不确定填 default",
                               required=False, enum_values=["default", "novelai", "gpt"], default="default"),
-            ToolParameterInfo(name="size", param_type=ToolParamType.STRING, description="尺寸",
+            ToolParameterInfo(name="size", param_type=ToolParamType.STRING, description="人物用竖图，风景用横图",
                               required=False, enum_values=["竖图", "横图", "方图"], default="竖图"),
             ToolParameterInfo(name="use_reference", param_type=ToolParamType.BOOLEAN,
-                              description="是否参考对方发的图", required=False, default=False),
+                              description="对方发了图或引用了一张图，并让你照着画时设为 true", required=False, default=False),
         ],
         core_tool=True,
     )
@@ -284,10 +268,9 @@ class RinneToolsPlugin(MaiBotPlugin):
     @Tool(
         "rinne_selfie",
         brief_description=SELFIE_DESC,
-        detailed_description=SELFIE_DETAIL,
         parameters=[
             _msg_id_param(),
-            ToolParameterInfo(name="scene", param_type=ToolParamType.STRING, description="自拍的情景", required=True),
+            ToolParameterInfo(name="scene", param_type=ToolParamType.STRING, description=SCENE_DESC, required=True),
         ],
         core_tool=True,
     )
@@ -297,10 +280,9 @@ class RinneToolsPlugin(MaiBotPlugin):
     @Tool(
         "rinne_voice",
         brief_description=TTS_DESC,
-        detailed_description=TTS_DETAIL,
         parameters=[
             _msg_id_param(),
-            ToolParameterInfo(name="text", param_type=ToolParamType.STRING, description="要说的话", required=True),
+            ToolParameterInfo(name="text", param_type=ToolParamType.STRING, description="要说的话，用你自己的口吻，一两句，不超过 100 字，不写动作描写", required=True),
         ],
         core_tool=True,
     )
@@ -310,14 +292,14 @@ class RinneToolsPlugin(MaiBotPlugin):
     @Tool(
         "rinne_dice",
         brief_description=DICE_DESC,
-        detailed_description=DICE_DETAIL,
         parameters=[
             _msg_id_param(),
-            ToolParameterInfo(name="faces", param_type=ToolParamType.INTEGER, description="面数",
+            ToolParameterInfo(name="faces", param_type=ToolParamType.INTEGER, description="骰子面数",
                               required=False, default=100),
-            ToolParameterInfo(name="target", param_type=ToolParamType.INTEGER, description="目标值", required=False),
-            ToolParameterInfo(name="event", param_type=ToolParamType.STRING, description="事件名", required=False),
+            ToolParameterInfo(name="target", param_type=ToolParamType.INTEGER, description="检定的目标值，没有就不填", required=False),
+            ToolParameterInfo(name="event", param_type=ToolParamType.STRING, description="检定的事件名，例如「侦查」「今天吃什么」", required=False),
         ],
+        core_tool=True,
     )
     async def rinne_dice(self, faces: int = 100, target: int | None = None, event: str = "",
                          **kwargs: Any) -> dict[str, Any]:
@@ -326,21 +308,21 @@ class RinneToolsPlugin(MaiBotPlugin):
     @Tool(
         "rinne_pixiv_search",
         brief_description=PIXIV_DESC,
-        detailed_description=PIXIV_DETAIL,
         parameters=[
             _msg_id_param(),
-            ToolParameterInfo(name="tags", param_type=ToolParamType.STRING, description="搜索标签", required=True),
-            ToolParameterInfo(name="count", param_type=ToolParamType.INTEGER, description="张数",
+            ToolParameterInfo(name="tags", param_type=ToolParamType.STRING, description="搜索标签，日文或英文的作品名、角色名效果最好，例如「初音ミク」「原神」「風景」", required=True),
+            ToolParameterInfo(name="count", param_type=ToolParamType.INTEGER, description="几张，1-3",
                               required=False, default=1),
-            ToolParameterInfo(name="mode", param_type=ToolParamType.STRING, description="模式",
+            ToolParameterInfo(name="mode", param_type=ToolParamType.STRING, description="random 随机高收藏，recent 最新，popular 热门",
                               required=False, enum_values=["random", "recent", "popular"], default="random"),
         ],
+        core_tool=True,
     )
     async def rinne_pixiv_search(self, tags: str = "", count: int = 1, mode: str = "random",
                                  **kwargs: Any) -> dict[str, Any]:
         return await self._call("pixiv_search", "pixiv", {"tags": tags, "count": count, "mode": mode}, kwargs)
 
-    @Tool("rinne_pixiv_daily", brief_description=DAILY_DESC, parameters=[_msg_id_param()])
+    @Tool("rinne_pixiv_daily", brief_description=DAILY_DESC, parameters=[_msg_id_param()], core_tool=True)
     async def rinne_pixiv_daily(self, **kwargs: Any) -> dict[str, Any]:
         return await self._call("pixiv_daily", "pixiv", {}, kwargs)
 
