@@ -73,15 +73,21 @@ def check_duty_state() -> None:
 
     assert not duty_state(rinne, GROUP, 100, night).off_duty, "group is always on duty"
     assert not duty_state(rinne, PRIVATE, 70, noon).off_duty
-    assert duty_state(rinne, PRIVATE, 90, noon).off_duty
+    assert not duty_state(rinne, PRIVATE, 94, noon).off_duty, "94 is not full favorability"
+    assert duty_state(rinne, PRIVATE, 95, noon).off_duty
     assert duty_state(rinne, PRIVATE, 70, night).off_duty
     assert duty_state(rinne, PRIVATE, 70, early).off_duty, "night span crosses midnight"
     assert not duty_state(rinne, PRIVATE, 50, night).off_duty
 
-    top, mid = rinne["stages"][-1], rinne["stages"][2]
-    assert "呆货" in user_call_for(top, duty_state(rinne, PRIVATE, 90, noon), "您")
-    assert user_call_for(top, duty_state(rinne, GROUP, 90, noon), "您") == "主人"
-    assert "呆货" not in user_call_for(mid, duty_state(rinne, PRIVATE, 70, night), "您")
+    def stage_of(fav: int) -> dict:
+        return next(s for s in rinne["stages"] if s["range"][0] <= fav <= s["range"][1])
+
+    assert stage_of(94)["name"] == "我的主人"
+    assert stage_of(95)["name"] == "唯一的主人"
+    assert "呆货" in user_call_for(stage_of(95), duty_state(rinne, PRIVATE, 95, noon), "您")
+    assert user_call_for(stage_of(95), duty_state(rinne, GROUP, 95, noon), "您") == "主人"
+    # 94 分的人夜里私聊能看到下班状态，但不会被叫呆货
+    assert "呆货" not in user_call_for(stage_of(94), duty_state(rinne, PRIVATE, 94, night), "您")
 
     # 私聊专属设定只在私聊的点评 prompt 里出现
     assert "怕痒" in build_dice_prompt(rinne, 50, "小明", "侦查", scene=PRIVATE)

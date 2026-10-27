@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "id": "onlyfeather.rinne-affinity-probe",
+  "version": "0.1.0",
+  "name": "凛音好感度探测（临时）",
+  "description": "临时探测插件：记录回复相关 Hook 实际收到的参数，用于开发好感度插件。只记录，不改动任何回复；用完请删除。",
+  "author": {
+    "name": "onlyfeather",
+    "url": "https://github.com/onlyfeather"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/onlyfeather/myTest"
+  },
+  "host_application": {
+    "min_version": "1.3.0",
+    "max_version": "1.3.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.16.99"
+  },
+  "plugin_type": "other",
+  "capabilities": [],
+  "i18n": {
+    "default_locale": "zh-CN"
+  }
+}

@@ -148,3 +148,6 @@ data/
 # Local reference files
 Izumi_0503.json
 .vscode/
+
+# MaiBot 插件运行时生成的配置
+maibot_plugins/*/config.toml

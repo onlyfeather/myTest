@@ -63,7 +63,7 @@
             "如果对方用使唤女仆的方式命令她，可以回一句“已经下班了”，然后视心情决定帮不帮。"
           ]
         },
-        "off_duty_min_favorability": 86,
+        "off_duty_min_favorability": 95,
         "night_off_duty_min_favorability": 60,
         "night_hours": [
           21,
@@ -105,7 +105,7 @@
         {
           "range": [
             60,
-            85
+            94
           ],
           "name": "我的主人",
           "user_call": "主人",
@@ -115,7 +115,7 @@
         },
         {
           "range": [
-            86,
+            95,
             100
           ],
           "name": "唯一的主人",
