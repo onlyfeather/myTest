@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "id": "onlyfeather.rinne-affinity",
+  "version": "1.0.0",
+  "name": "凛音好感度",
+  "description": "给白鸟凛音加上每人独立的好感度：回复前告诉她对方处于哪个关系阶段、她现在是上班还是下班、该怎么称呼；回复后由模型判断这次互动让好感度升还是降。",
+  "author": {
+    "name": "onlyfeather",
+    "url": "https://github.com/onlyfeather"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/onlyfeather/myTest"
+  },
+  "host_application": {
+    "min_version": "1.3.0",
+    "max_version": "1.3.99"
+  },
+  "sdk": {
+    "min_version": "2.10.0",
+    "max_version": "2.16.99"
+  },
+  "plugin_type": "data",
+  "capabilities": ["send.text", "message.get_by_id", "llm.generate"],
+  "i18n": {
+    "default_locale": "zh-CN"
+  }
+}
