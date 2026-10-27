@@ -25,6 +25,24 @@ def test_tags():
     assert join_prompt("  ", "1girl") == "1girl"
 
 
+def test_translate_empty_reply_raises(monkeypatch):
+    """带思考的模型只返回思考内容、正文为空时直接报错，不用原文出图。"""
+    import asyncio
+
+    import pytest
+
+    from mytest.plugins._shared.services import llm
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins.ai_draw_plugin import prompting
+
+    async def fake_chat(messages, **kwargs):
+        return ""
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    with pytest.raises(ServiceError, match="没有返回正文"):
+        asyncio.run(prompting.to_novelai_tags("白发少女"))
+
+
 def test_speakable():
     assert speakable("（轻轻鼓掌）不愧是您～✨") == "不愧是您"
     assert speakable("*叹气* 好吧【小声】") == "好吧"

@@ -103,11 +103,15 @@ async def to_novelai_tags(prompt: str) -> str:
     reply = await llm.chat(
         [{"role": "system", "content": TRANSLATE_PROMPT}, {"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=400,
+        # 带思考的模型会先把 token 花在思考上，给太少时正文是空的
+        max_tokens=2000,
     )
     tags = clean_tags(reply)
     if not tags:
-        raise ServiceError("翻译 tag 失败：大模型返回为空")
+        raise ServiceError(
+            f"翻译 tag 失败：大模型（{llm.default_model()}）没有返回正文。"
+            "如果是带思考的模型，请在 WebUI「大模型」里换成不思考的模型"
+        )
     return tags
 
 

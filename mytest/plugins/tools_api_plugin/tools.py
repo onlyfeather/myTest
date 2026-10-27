@@ -186,6 +186,7 @@ async def tool_draw(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
                 inputs.references = await _download_references(ctx)
             result = await draw(provider, DrawRequest(size=size, prompt=prompt), inputs)
         except Exception as e:
+            logger.opt(exception=e).warning("[凛音工具] draw 失败：provider={}", provider)
             name = "NovelAI" if provider == "novelai" else "GPT Image"
             await send(ctx, f"……抱歉，这次没能画好。{describe_exception(name, e)}")
             return
@@ -212,6 +213,7 @@ async def tool_selfie(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         try:
             image = await take_selfie(scene)
         except Exception as e:
+            logger.opt(exception=e).warning("[凛音工具] selfie 失败")
             await send(ctx, f"……今天状态不太好，下次再拍吧。（{describe_exception('自拍', e)}）")
             return
         await send(ctx, Message(MessageSegment.image(image)), quote=True)

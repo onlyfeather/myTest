@@ -207,6 +207,7 @@ def test_selfie_uses_v45_even_when_drawing_uses_v5(monkeypatch, tmp_path):
     monkeypatch.setattr(selfie, "persona_path", lambda: persona)
     monkeypatch.setattr(selfie, "selfie_settings", SimpleNamespace(
         enabled=True, backend="novelai", base_prompt="1girl", with_style=True, novelai_model="nai-diffusion-5-full",
+        artists="artist:selfie_only",
     ))
     nai = {k: getattr(draw_config.novelai_settings, k) for k in (
         "token", "base_url", "negative", "steps", "scale", "sampler", "positive_prefix", "default_artists",
@@ -218,6 +219,7 @@ def test_selfie_uses_v45_even_when_drawing_uses_v5(monkeypatch, tmp_path):
 
     async def fake_generate(req, **kwargs):
         used["model"] = req.model
+        used["prompt"] = req.prompt
         return b"png", 1
 
     monkeypatch.setattr(novelai, "generate", fake_generate)
@@ -226,6 +228,7 @@ def test_selfie_uses_v45_even_when_drawing_uses_v5(monkeypatch, tmp_path):
     assert asyncio.run(selfie.take_selfie("office")) == b"png"
     # 设置里存了不支持参考的模型（例如旧配置）时退回 V4.5
     assert used["model"] in novelai.REFERENCE_MODELS
+    assert "artist:selfie_only" in used["prompt"]
 
 
 # ---------------------------------------------------------------- MaiBot 插件的消息解析

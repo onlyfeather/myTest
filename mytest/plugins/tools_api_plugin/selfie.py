@@ -36,7 +36,9 @@ selfie_settings = register(
             SettingField("novelai_model", "NovelAI 模型", type="select", default=novelai.REFERENCE_MODELS[0],
                          options=tuple(m for m in novelai.MODELS if novelai.supports_reference(m[0])),
                          help="自拍要用人设图做角色参考，只有 V4.5 支持；和画图用的模型分开设置，"
-                         "其余参数（步数、画师串等）沿用 NovelAI 的设置"),
+                         "其余参数（步数等）沿用 NovelAI 的设置"),
+            SettingField("artists", "画师串", type="textarea", default="",
+                         help="仅 NovelAI：只用在自拍上；留空沿用 NovelAI 的默认画师串"),
             SettingField("with_style", "连画风一起参考", type="bool", default=True,
                          help="仅 NovelAI：打开后画风也贴近人设图"),
         ],
@@ -129,11 +131,12 @@ async def take_selfie(scene: str) -> bytes:
 
     s = novelai_settings
     scene_tags = await to_novelai_tags(scene) if s.translate and has_chinese(scene) else scene
+    artists = str(selfie_settings.artists).strip() or str(s.default_artists)
     canvas, _ = images.letterbox(persona, novelai.REFERENCE_CANVASES)
     width, height = novelai.SIZES["竖图"]
     image, _seed = await novelai.generate(
         novelai.NovelAIRequest(
-            prompt=compose(str(s.positive_prefix), str(s.default_artists), f"{base}, {scene_tags}"),
+            prompt=compose(str(s.positive_prefix), artists, f"{base}, {scene_tags}"),
             negative=str(s.negative),
             model=selfie_model(),
             width=width,
