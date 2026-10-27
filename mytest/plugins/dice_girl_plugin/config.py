@@ -1,85 +1,77 @@
 import os
 from pathlib import Path
-from typing import Optional
 
 from nonebot import get_driver, logger
-from pydantic import BaseModel
+
+from .._shared.settings import SettingField, SettingSection, llm_settings, register
+
+# 大模型的地址、密钥和模型在共用的「大模型」分区里，这里只放骰娘自己的开关。
+dice_settings = register(
+    SettingSection(
+        id="dice_girl",
+        title="骰娘",
+        description="投骰检定，并由凛音用 AI 点评结果。",
+        order=20,
+        fields=[
+            SettingField(
+                "ai_enabled",
+                "AI 点评",
+                type="bool",
+                default=True,
+                help="关闭后只显示投骰结果和一句固定点评",
+                env=("dice_girl_ai_enabled",),
+            ),
+            SettingField(
+                "voice_reply",
+                "同时发语音",
+                type="bool",
+                default=False,
+                help="点评文字之外再用 Fish Audio 合成一条语音（需要先配置「语音合成」）",
+            ),
+        ],
+    )
+)
 
 
-class DiceGirlConfig(BaseModel):
-    ai_enabled: bool = True
-    ai_api_key: str = ""
-    ai_base_url: str = "https://api.openai.com/v1"
-    ai_model: str = "gpt-4o-mini"
-    ai_timeout: float = 120.0
-    ai_json_mode: bool = False
-    data_dir: Optional[Path] = None
+class _Config:
+    """兼容旧代码的 config.ai_xxx 写法，每次读取都是最新配置。"""
 
+    @property
+    def ai_api_key(self) -> str:
+        return str(llm_settings.api_key)
 
-def _load_config() -> DiceGirlConfig:
-    raw_config = get_driver().config
+    @property
+    def ai_base_url(self) -> str:
+        return str(llm_settings.base_url)
 
-    def get_config_value(*names: str, default: str = "") -> str:
-        for name in names:
-            value = getattr(raw_config, name.lower(), "")
-            if value not in ("", None):
-                return str(value)
+    @property
+    def ai_model(self) -> str:
+        return str(llm_settings.model)
 
-            value = os.getenv(name.upper())
-            if value not in ("", None):
-                return str(value)
+    @property
+    def ai_timeout(self) -> float:
+        return float(llm_settings.timeout)
 
-        return default
+    @property
+    def ai_json_mode(self) -> bool:
+        return bool(llm_settings.json_mode)
 
-    def get_config_bool(name: str, default: bool = True) -> bool:
-        value = getattr(raw_config, name.lower(), None)
-        if value is None:
-            value = os.getenv(name.upper())
+    @property
+    def ai_proxy(self) -> str:
+        return str(llm_settings.proxy)
 
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() not in {"0", "false", "no", "off", "关闭"}
+    @property
+    def ai_enabled(self) -> bool:
+        return bool(dice_settings.ai_enabled)
 
-    def get_config_float(name: str, default: float) -> float:
-        value = getattr(raw_config, name.lower(), None)
-        if value is None:
-            value = os.getenv(name.upper())
-
-        if value in ("", None):
-            return default
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-
-    return DiceGirlConfig(
-        ai_enabled=get_config_bool("dice_girl_ai_enabled", True),
-        ai_api_key=get_config_value(
-            "dice_girl_ai_api_key",
-            "ai_api_key",
-            "openai_api_key",
-        ),
-        ai_base_url=get_config_value(
-            "dice_girl_ai_base_url",
-            "ai_base_url",
-            "openai_base_url",
-            default="https://api.openai.com/v1",
-        ),
-        ai_model=get_config_value(
-            "dice_girl_ai_model",
-            "ai_model",
-            "openai_model",
-            default="gpt-4o-mini",
-        ),
-        ai_timeout=get_config_float("dice_girl_ai_timeout", 120.0),
-        ai_json_mode=get_config_bool("dice_girl_ai_json_mode", False),
-        data_dir=get_config_value("dice_girl_data_dir") or None,
+    data_dir = (
+        str(getattr(get_driver().config, "dice_girl_data_dir", "") or "")
+        or os.environ.get("DICE_GIRL_DATA_DIR")
+        or None
     )
 
 
-config = _load_config()
+config = _Config()
 
 
 def _resolve_data_dir() -> Path:

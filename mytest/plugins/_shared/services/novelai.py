@@ -1,0 +1,139 @@
+"""NovelAI 文生图。接口：POST {base}/ai/generate-image，返回 ZIP（里面一张 PNG）。"""
+
+from __future__ import annotations
+
+import io
+import random
+import zipfile
+from dataclasses import dataclass
+from typing import Any
+
+from .http import ServiceError, describe_http_error, http_client
+
+NAME = "NovelAI"
+
+MODELS = (
+    ("nai-diffusion-4-5-full", "V4.5 Full"),
+    ("nai-diffusion-4-5-curated", "V4.5 Curated"),
+    ("nai-diffusion-4-full", "V4 Full"),
+    ("nai-diffusion-3", "Anime V3"),
+)
+# NovelAI V5 已上线，但 API 参数和 V4.5 有差异，未验证前不放进选项。
+
+SAMPLERS = (
+    ("k_euler_ancestral", "Euler Ancestral"),
+    ("k_euler", "Euler"),
+    ("k_dpmpp_2s_ancestral", "DPM++ 2S Ancestral"),
+    ("k_dpmpp_2m_sde", "DPM++ 2M SDE"),
+    ("k_dpmpp_2m", "DPM++ 2M"),
+)
+
+SIZES = {
+    "竖图": (832, 1216),
+    "横图": (1216, 832),
+    "方图": (1024, 1024),
+}
+
+
+@dataclass
+class NovelAIRequest:
+    prompt: str
+    negative: str
+    model: str
+    width: int
+    height: int
+    steps: int
+    scale: float
+    sampler: str
+    seed: int | None = None
+
+
+def build_payload(req: NovelAIRequest) -> dict[str, Any]:
+    seed = req.seed if req.seed is not None else random.randint(0, 2**32 - 1)
+    parameters: dict[str, Any] = {
+        "params_version": 3,
+        "width": req.width,
+        "height": req.height,
+        "scale": req.scale,
+        "sampler": req.sampler,
+        "steps": req.steps,
+        "seed": seed,
+        "n_samples": 1,
+        "noise_schedule": "karras",
+        "uc": req.negative,
+        "qualityToggle": False,
+        "legacy": False,
+        "legacy_v3_extend": False,
+    }
+    if req.model.startswith("nai-diffusion-4"):
+        # V4 / V4.5 必须带结构化提示词，没有角色时 char_captions 传空数组。
+        parameters.update(
+            {
+                "legacy_uc": False,
+                "v4_prompt": {
+                    "caption": {"base_caption": req.prompt, "char_captions": []},
+                    "use_coords": False,
+                    "use_order": True,
+                },
+                "v4_negative_prompt": {
+                    "caption": {"base_caption": req.negative, "char_captions": []},
+                    "legacy_uc": False,
+                },
+            }
+        )
+    else:
+        parameters.update({"sm": False, "sm_dyn": False})
+    return {"input": req.prompt, "model": req.model, "action": "generate", "parameters": parameters}
+
+
+def extract_image(content: bytes) -> bytes:
+    if content[:8] == b"\x89PNG\r\n\x1a\n":
+        return content
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+            if not names:
+                raise ServiceError(f"{NAME} 返回的压缩包是空的")
+            return zf.read(names[0])
+    except zipfile.BadZipFile:
+        raise ServiceError(f"{NAME} 返回的不是图片") from None
+
+
+async def generate(
+    req: NovelAIRequest,
+    *,
+    token: str,
+    base_url: str,
+    proxy: str = "",
+    timeout: float = 120.0,
+) -> tuple[bytes, int]:
+    """返回 (PNG 字节, 实际使用的种子)。"""
+    if not token.strip():
+        raise ServiceError("还没有配置 NovelAI 的 Token")
+    payload = build_payload(req)
+    url = f"{base_url.rstrip('/')}/ai/generate-image"
+    headers = {"Authorization": f"Bearer {token.strip()}", "Accept": "application/x-zip-compressed"}
+    async with http_client(proxy, timeout) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+    if resp.status_code not in {200, 201}:
+        raise ServiceError(describe_http_error(NAME, resp))
+    return extract_image(resp.content), payload["parameters"]["seed"]
+
+
+async def check_subscription(*, token: str, base_url: str, proxy: str = "", timeout: float = 30.0) -> str:
+    """调用订阅信息接口，确认 Token 可用，并返回剩余点数。"""
+    if not token.strip():
+        raise ServiceError("还没有配置 NovelAI 的 Token")
+    # 订阅接口在 api.novelai.net；如果用了第三方中转，这一步可能不存在，跳过即可。
+    url = f"{base_url.rstrip('/')}/user/subscription"
+    async with http_client(proxy, timeout) as client:
+        resp = await client.get(url, headers={"Authorization": f"Bearer {token.strip()}"})
+    if resp.status_code != 200:
+        raise ServiceError(describe_http_error(NAME, resp))
+    data = resp.json()
+    steps = data.get("trainingStepsLeft") or {}
+    anlas = 0
+    if isinstance(steps, dict):
+        anlas = int(steps.get("fixedTrainingStepsLeft") or 0) + int(steps.get("purchasedTrainingSteps") or 0)
+    tier = {0: "免费", 1: "Tablet", 2: "Scroll", 3: "Opus"}.get(int(data.get("tier") or 0), "未知")
+    return f"Token 可用，订阅：{tier}，剩余 Anlas：{anlas}"

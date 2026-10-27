@@ -39,6 +39,13 @@ nonebot-adapter-onebot = [
 nonebot-plugin-status = ["nonebot_plugin_status"]
 nonebot-plugin-sentry = ["nonebot_plugin_sentry"]
 nonebot-plugin-alconna = ["nonebot_plugin_alconna"]
+[tool.pytest.ini_options]
+# mytest/ 没有 __init__.py，按命名空间包解析，测试文件才能以 mytest.plugins.xxx 的完整包名导入。
+addopts = "--import-mode=importlib -p no:cacheprovider"
+consider_namespace_packages = true
+testpaths = ["tests", "mytest"]
+python_files = ["test_*.py", "tests_*.py"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py310"

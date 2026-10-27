@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>凛音 · 控制台</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e4e7ee;
+  --accent: #3d6df2; --accent-soft: #e8eefe; --danger: #d94848; --ok: #1f9d63; --warn: #b7791f;
+  --radius: 12px; --shadow: 0 1px 2px rgba(20, 30, 60, .06), 0 4px 16px rgba(20, 30, 60, .04);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12151c; --panel: #1a1f29; --text: #e6e9f0; --muted: #8d95a8; --line: #2a3140;
+    --accent: #6d93ff; --accent-soft: #23304f; --danger: #f06b6b; --ok: #3ccf8e; --warn: #e0a84a;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--text);
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* 登录 */
+/* #root 没有固定高度，百分比高度不生效，所以直接用视口高度 */
+.login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
+.login form {
+  width: 100%; max-width: 340px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 32px 28px; box-shadow: var(--shadow);
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px; }
+.brand-mark {
+  width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--accent); color: #fff; font-size: 14px;
+}
+.login h1 { font-size: 20px; margin: 20px 0 4px; }
+.login p { margin: 0 0 20px; color: var(--muted); }
+
+/* 布局 */
+.app { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+aside {
+  border-right: 1px solid var(--line); background: var(--panel); padding: 20px 12px;
+  position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column;
+}
+aside .brand { padding: 0 8px 18px; }
+nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; }
+nav button {
+  all: unset; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px; border-radius: 8px; cursor: pointer; color: var(--muted);
+}
+nav button:hover { background: var(--bg); color: var(--text); }
+nav button[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+nav button:focus-visible { outline: 2px solid var(--accent); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
+.side-foot { padding: 12px 8px 0; border-top: 1px solid var(--line); }
+main { padding: 32px clamp(16px, 4vw, 48px) 120px; max-width: 880px; width: 100%; }
+.head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.head h2 { margin: 0; font-size: 22px; }
+.head p { margin: 4px 0 0; color: var(--muted); }
+
+/* 卡片和配置项 */
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); overflow: hidden;
+}
+.row { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 6px 24px; padding: 16px 20px; }
+.row + .row { border-top: 1px solid var(--line); }
+.row label.name { font-weight: 500; padding-top: 7px; }
+.row .meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.help { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+.err { color: var(--danger); font-size: 12.5px; margin-top: 6px; }
+.badge { font-size: 11.5px; padding: 1px 7px; border-radius: 99px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.badge.saved { color: var(--accent); border-color: transparent; background: var(--accent-soft); }
+.badge.set { color: var(--ok); }
+input[type=text], input[type=password], input[type=number], textarea, select {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); transition: border-color .15s, background .15s;
+}
+input:hover, textarea:hover, select:hover { border-color: var(--muted); }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); background: var(--panel); }
+textarea { min-height: 84px; resize: vertical; }
+.invalid input, .invalid textarea, .invalid select { border-color: var(--danger); }
+.inline { display: flex; gap: 8px; align-items: center; }
+.link { all: unset; color: var(--accent); cursor: pointer; font-size: 12.5px; }
+.link:hover { text-decoration: underline; }
+.link:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
+
+/* 开关 */
+.switch { position: relative; display: inline-flex; align-items: center; gap: 10px; cursor: pointer; padding-top: 5px; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .track { width: 38px; height: 22px; border-radius: 99px; background: var(--line); transition: background .15s; position: relative; }
+.switch .track::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.2);
+}
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(16px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 按钮 */
+.btn {
+  border: 1px solid var(--line); background: var(--panel); padding: 7px 14px; border-radius: 8px;
+  cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn:disabled { opacity: .55; cursor: default; filter: none; }
+.btn.block { width: 100%; padding: 9px 14px; }
+
+/* 底部保存栏 */
+.savebar {
+  position: fixed; left: 232px; right: 0; bottom: 0; display: flex; justify-content: center;
+  padding: 14px; pointer-events: none; transform: translateY(110%); transition: transform .2s;
+}
+.savebar.show { transform: none; }
+.savebar > div {
+  pointer-events: auto; display: flex; align-items: center; gap: 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 10px 10px 18px;
+  box-shadow: 0 8px 30px rgba(20, 30, 60, .15);
+}
+.toast {
+  position: fixed; top: 18px; left: 50%; transform: translate(-50%, -150%);
+  visibility: hidden; opacity: 0; transition: transform .2s, opacity .2s, visibility .2s;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px;
+  box-shadow: 0 8px 30px rgba(20, 30, 60, .15); max-width: min(560px, 92vw); z-index: 10;
+}
+.toast.show { transform: translate(-50%, 0); visibility: visible; opacity: 1; }
+.toast.ok { border-left: 3px solid var(--ok); }
+.toast.bad { border-left: 3px solid var(--danger); }
+.empty { color: var(--muted); padding: 40px; text-align: center; }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; }
+  aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 14px 12px 10px; }
+  aside .brand { padding-bottom: 10px; }
+  nav { flex-direction: row; overflow-x: auto; }
+  nav button { white-space: nowrap; }
+  .side-foot { display: none; }
+  main { padding-top: 20px; }
+  .row { grid-template-columns: 1fr; }
+  .row label.name { padding-top: 0; }
+  .savebar { left: 0; }
+  .head { flex-direction: column; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="root" aria-live="polite"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>
+"use strict";
+const API = location.pathname.replace(/\/+$/, "") + "/api";
+const state = { sections: [], current: null, draft: {}, reset: new Set(), errors: {} };
+const root = document.getElementById("root");
+
+function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "value") el.value = v;
+    else if (k === "checked") el.checked = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) {
+    if (c === null || c === undefined || c === false) continue;
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+
+async function api(path, options = {}) {
+  const resp = await fetch(API + path, {
+    credentials: "same-origin",
+    ...options,
+    headers: { "Content-Type": "application/json", "X-Requested-With": "mytest-webui", ...(options.headers || {}) },
+  });
+  let data = {};
+  try { data = await resp.json(); } catch (e) { data = { ok: false, message: "服务器返回格式不对" }; }
+  if (resp.status === 401 && path !== "/login") { renderLogin(); throw new Error("请先登录"); }
+  return { status: resp.status, ...data };
+}
+
+let toastTimer;
+function toast(message, ok = true) {
+  const t = document.getElementById("toast");
+  t.textContent = message;
+  t.className = "toast show " + (ok ? "ok" : "bad");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = "toast"; }, ok ? 2600 : 5000);
+}
+
+const brand = () => h("div", { class: "brand" }, h("span", { class: "brand-mark", "aria-hidden": "true" }, "凛"), "凛音控制台");
+
+/* ---------------- 登录 ---------------- */
+function renderLogin(message) {
+  const input = h("input", { type: "password", id: "pw", autocomplete: "current-password", required: true });
+  const err = h("div", { class: "err", role: "alert" }, message || "");
+  const btn = h("button", { class: "btn primary block", type: "submit" }, "登录");
+  const form = h("form", {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      btn.disabled = true; err.textContent = "";
+      try {
+        const r = await api("/login", { method: "POST", body: JSON.stringify({ password: input.value }) });
+        if (r.ok) return load();
+        err.textContent = r.message || "登录失败";
+        input.select();
+      } finally { btn.disabled = false; }
+    },
+  },
+    brand(),
+    h("h1", {}, "登录"),
+    h("p", {}, "NoneBot 插件配置"),
+    h("label", { for: "pw", class: "sr-only" }, "密码"),
+    input, err,
+    h("div", { style: "height:14px" }), btn,
+  );
+  root.replaceChildren(h("div", { class: "login" }, form));
+  input.placeholder = "密码";
+  input.focus();
+}
+
+/* ---------------- 配置页 ---------------- */
+const dirty = () => Object.keys(state.draft).length > 0 || state.reset.size > 0;
+const section = () => state.sections.find((s) => s.id === state.current);
+
+function sourceBadge(f) {
+  if (state.reset.has(f.key)) return h("span", { class: "badge" }, "将恢复默认");
+  if (f.key in state.draft) return h("span", { class: "badge saved" }, "未保存");
+  if (f.type === "secret") return h("span", { class: "badge " + (f.has_value ? "set" : "") }, f.has_value ? "已设置" : "未设置");
+  if (f.source === "saved") return h("span", { class: "badge saved" }, "已在此修改");
+  if (f.source === "env") return h("span", { class: "badge", title: f.env.join(" / ").toUpperCase() }, "来自 .env");
+  return null;
+}
+
+function setDraft(f, value) {
+  state.reset.delete(f.key);
+  delete state.errors[f.key];
+  const original = f.type === "lines" ? (f.value || []).join("\n") : f.value;
+  if (f.type !== "secret" && String(value) === String(original)) delete state.draft[f.key];
+  else if (f.type === "secret" && value === "") delete state.draft[f.key];
+  else state.draft[f.key] = value;
+  updateChrome();
+}
+
+function control(f) {
+  const id = "f-" + f.key;
+  const has = f.key in state.draft;
+  const value = has ? state.draft[f.key] : f.value;
+  const common = { id, "aria-describedby": f.help ? id + "-help" : null };
+  if (f.type === "bool") {
+    return h("label", { class: "switch" },
+      h("input", { ...common, type: "checkbox", role: "switch", checked: !!value, onchange: (e) => setDraft(f, e.target.checked) }),
+      h("span", { class: "track", "aria-hidden": "true" }),
+      h("span", { class: "sr-only" }, f.label));
+  }
+  if (f.type === "select") {
+    return h("select", { ...common, onchange: (e) => setDraft(f, e.target.value) },
+      f.options.map((o) => h("option", { value: o.value, selected: o.value === value }, o.label)));
+  }
+  if (f.type === "textarea" || f.type === "lines") {
+    const text = f.type === "lines" && Array.isArray(value) ? value.join("\n") : value;
+    return h("textarea", { ...common, value: text ?? "", placeholder: f.placeholder || (f.type === "lines" ? "每行一个" : ""), oninput: (e) => setDraft(f, e.target.value) });
+  }
+  if (f.type === "secret") {
+    const input = h("input", {
+      ...common, type: "password", autocomplete: "off", spellcheck: "false", value: has ? value : "",
+      placeholder: f.has_value ? "已设置，留空表示不修改" : "未设置", oninput: (e) => setDraft(f, e.target.value),
+    });
+    const toggle = h("button", { class: "btn", type: "button", "aria-label": "显示或隐藏 " + f.label, onclick: () => {
+      input.type = input.type === "password" ? "text" : "password";
+      toggle.textContent = input.type === "password" ? "显示" : "隐藏";
+    } }, "显示");
+    return h("div", { class: "inline" }, input, toggle);
+  }
+  const numeric = f.type === "int" || f.type === "float";
+  return h("input", {
+    ...common, type: numeric ? "number" : "text", value: value ?? "", placeholder: f.placeholder || null,
+    step: f.type === "int" ? "1" : (numeric ? "any" : null), min: f.min, max: f.max,
+    spellcheck: "false", oninput: (e) => setDraft(f, e.target.value),
+  });
+}
+
+function fieldRow(f) {
+  const canReset = f.source === "saved" && !state.reset.has(f.key);
+  return h("div", { class: "row" + (state.errors[f.key] ? " invalid" : "") },
+    h("div", {},
+      h("label", { class: "name", for: "f-" + f.key }, f.label),
+      h("div", { class: "meta" }, sourceBadge(f))),
+    h("div", {},
+      control(f),
+      f.help ? h("div", { class: "help", id: "f-" + f.key + "-help" }, f.help) : null,
+      state.errors[f.key] ? h("div", { class: "err", role: "alert" }, state.errors[f.key]) : null,
+      canReset ? h("button", { class: "link", type: "button", onclick: () => {
+        delete state.draft[f.key]; state.reset.add(f.key); renderMain(); updateChrome();
+      } }, f.env.length ? "恢复为 .env / 默认值" : "恢复默认值") : null));
+}
+
+function renderMain() {
+  const s = section();
+  const main = document.querySelector("main");
+  if (!s) { main.replaceChildren(h("div", { class: "empty" }, "没有可配置的项目")); return; }
+  const testBtn = s.testable ? h("button", { class: "btn", type: "button", onclick: async () => {
+    if (dirty()) return toast("请先保存修改，再测试连接", false);
+    testBtn.disabled = true; testBtn.textContent = "测试中…";
+    try {
+      const r = await api(`/settings/${encodeURIComponent(s.id)}/test`, { method: "POST" });
+      toast(r.message || (r.ok ? "测试通过" : "测试失败"), !!r.ok);
+    } catch (e) { /* 已处理 */ } finally { testBtn.disabled = false; testBtn.textContent = "测试连接"; }
+  } }, "测试连接") : null;
+  main.replaceChildren(
+    h("div", { class: "head" },
+      h("div", {}, h("h2", {}, s.title), s.description ? h("p", {}, s.description) : null),
+      testBtn),
+    h("div", { class: "card" }, s.fields.map(fieldRow)));
+}
+
+function renderNav() {
+  const nav = document.querySelector("nav");
+  nav.replaceChildren(...state.sections.map((s) => h("button", {
+    type: "button", "aria-current": s.id === state.current ? "true" : "false",
+    onclick: () => switchTo(s.id),
+  }, s.title, s.id === state.current && dirty() ? h("span", { class: "dot", "aria-label": "有未保存的修改" }) : null)));
+}
+
+function updateChrome() {
+  renderNav();
+  document.querySelector(".savebar").classList.toggle("show", dirty());
+  const s = section();
+  if (s) s.fields.forEach((f) => {
+    const row = document.getElementById("f-" + f.key)?.closest(".row");
+    const meta = row?.querySelector(".meta");
+    if (meta) meta.replaceChildren(...[sourceBadge(f)].filter(Boolean));
+  });
+}
+
+function switchTo(id) {
+  if (id === state.current) return;
+  if (dirty() && !confirm("当前页面有未保存的修改，确定要放弃吗？")) return;
+  state.current = id; state.draft = {}; state.reset = new Set(); state.errors = {};
+  location.hash = id;
+  renderNav(); renderMain(); updateChrome();
+  document.querySelector("main h2")?.focus?.();
+}
+
+async function save() {
+  const s = section();
+  const btn = document.getElementById("save");
+  btn.disabled = true;
+  try {
+    const r = await api(`/settings/${encodeURIComponent(s.id)}`, {
+      method: "PUT", body: JSON.stringify({ values: state.draft, reset: [...state.reset] }),
+    });
+    if (r.ok) {
+      Object.assign(s, r.section);
+      state.draft = {}; state.reset = new Set(); state.errors = {};
+      toast("已保存，立即生效");
+    } else {
+      state.errors = r.errors || {};
+      toast(r.message || "保存失败", false);
+    }
+    renderMain(); updateChrome();
+    document.querySelector(".invalid input, .invalid textarea, .invalid select")?.focus();
+  } catch (e) { /* 已处理 */ } finally { btn.disabled = false; }
+}
+
+function discard() {
+  state.draft = {}; state.reset = new Set(); state.errors = {};
+  renderMain(); updateChrome();
+}
+
+function renderApp() {
+  root.replaceChildren(h("div", { class: "app" },
+    h("aside", {},
+      brand(),
+      h("nav", { "aria-label": "配置分区" }),
+      h("div", { class: "side-foot" }, h("button", { class: "btn block", type: "button", onclick: async () => {
+        if (dirty() && !confirm("有未保存的修改，确定要退出吗？")) return;
+        await api("/logout", { method: "POST" }).catch(() => {});
+        state.draft = {}; state.reset = new Set();
+        renderLogin();
+      } }, "退出登录"))),
+    h("main", { tabindex: "-1" })),
+    h("div", { class: "savebar", role: "region", "aria-label": "保存修改" }, h("div", {},
+      h("span", {}, "有未保存的修改"),
+      h("button", { class: "btn", type: "button", onclick: discard }, "放弃"),
+      h("button", { class: "btn primary", type: "button", id: "save", onclick: save }, "保存"))));
+  renderNav(); renderMain(); updateChrome();
+}
+
+async function load() {
+  const r = await api("/settings").catch(() => null);
+  if (!r || !r.ok) return;
+  state.sections = r.sections;
+  const fromHash = decodeURIComponent(location.hash.slice(1));
+  state.current = state.sections.some((s) => s.id === fromHash) ? fromHash : state.sections[0]?.id;
+  renderApp();
+}
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "s" && dirty()) { e.preventDefault(); save(); }
+});
+window.addEventListener("beforeunload", (e) => { if (dirty()) { e.preventDefault(); e.returnValue = ""; } });
+
+(async () => {
+  const r = await api("/session").catch(() => null);
+  if (!r) return renderLogin("无法连接服务器");
+  if (!r.enabled) return renderLogin("WebUI 未启用：请在 .env 里设置 WEBUI_PASSWORD 后重启");
+  if (r.logged_in) return load();
+  renderLogin();
+})();
+</script>
+</body>
+</html>
