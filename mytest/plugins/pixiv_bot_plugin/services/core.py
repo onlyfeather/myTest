@@ -59,6 +59,30 @@ async def search_images(spider, parsed) -> ImageResult:
             display_tags = f"{parsed.display_tags}（收藏>{effective_min_bookmarks}）"
 
     search_result = await spider.search_illustrations(tags)
+    images = []
+    if search_result:
+        images = await _select_search_images(
+            spider,
+            search_result,
+            parsed.mode,
+            parsed.count,
+            min_bookmarks=effective_min_bookmarks or 0,
+            max_attempts=max(20, parsed.count * 20),
+        )
+    if not images and tags != parsed.display_tags:
+        # 「500users入り」是用户手动加的标签，很多高收藏作品没有；去掉它再搜一次，按实际收藏数筛选
+        logger.debug(f"搜索「{tags}」没有可用作品，去掉收藏标签重试")
+        retry_result = await spider.search_illustrations(parsed.display_tags)
+        if retry_result:
+            search_result = retry_result
+            images = await _select_search_images(
+                spider,
+                retry_result,
+                parsed.mode,
+                parsed.count,
+                min_bookmarks=effective_min_bookmarks or 0,
+                max_attempts=max(20, parsed.count * 20),
+            )
 
     if not search_result:
         return ImageResult(
@@ -73,14 +97,6 @@ async def search_images(spider, parsed) -> ImageResult:
             effective_min_bookmarks=effective_min_bookmarks or 0,
         )
 
-    images = await _select_search_images(
-        spider,
-        search_result,
-        parsed.mode,
-        parsed.count,
-        min_bookmarks=effective_min_bookmarks or 0,
-        max_attempts=max(20, parsed.count * 20),
-    )
     if not images:
         return ImageResult(
             False,
@@ -255,21 +271,14 @@ async def _select_search_images(
             allow_fallback=min_bookmarks <= 0,
             source_prefix="random",
         )
-    if mode == "recent":
-        return await build_images_from_candidates(
-            spider,
-            search_result.get("popular", {}).get("recent", []),
-            count,
-            "popular_recent",
-            shuffle=True,
-        )
-    if mode == "popular":
-        return await build_images_from_candidates(
-            spider,
-            search_result.get("popular", {}).get("permanent", []),
-            count,
-            "popular_permanent",
-            shuffle=True,
+    if mode in ("recent", "popular"):
+        key = "recent" if mode == "recent" else "permanent"
+        popular = search_result.get("popular", {}).get(key, [])
+        if popular:
+            return await build_images_from_candidates(spider, popular, count, f"popular_{key}", shuffle=True)
+        # Pixiv 没给热门列表时（标签冷门或带了收藏筛选，常见），退回从普通结果里按收藏和质量挑
+        return await _select_search_images(
+            spider, search_result, "random", count, min_bookmarks=min_bookmarks, max_attempts=max_attempts
         )
     return []
 

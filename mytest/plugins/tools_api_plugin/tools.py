@@ -287,17 +287,20 @@ async def _pixiv_target(ctx: ToolContext):
 
 
 async def tool_pixiv_search(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    from ..pixiv_bot_plugin.parser.search import SearchParams
+    from ..pixiv_bot_plugin.parser.search import build_search_params
     from ..pixiv_bot_plugin.pixiv import get_pixiv_spider
     from ..pixiv_bot_plugin.renderers import send_images_with_info
     from ..pixiv_bot_plugin.services.core import search_images
 
     tags = _text(args, "tags", limit=60)
-    if not tags:
-        raise ToolError("缺少搜索标签")
     count = _int(args, "count", default=1, low=1, high=3)
     mode = _choice(args, "mode", ("random", "recent", "popular"), "random")
-    params = SearchParams(display_tags=tags, search_tags=tags, count=count, mode=mode)
+    # 凛音常把「500users入り」写进标签，要拆成收藏筛选；原样搜会和随机模式自带的
+    # 「100users入り」叠在一起，Pixiv 要求两个标签同时存在，结果就是空的
+    params = build_search_params(tags, count, mode)
+    if params is None:
+        raise ToolError("缺少搜索标签")
+    tags = params.display_tags
     target = await _pixiv_target(ctx)
 
     async def job():

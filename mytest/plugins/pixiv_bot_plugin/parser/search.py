@@ -80,6 +80,13 @@ def parse_search_text(raw_text: str) -> SearchParams | None:
             count = int(tokens.pop(index))
             break
 
+    return build_search_params(tokens, min(max(count, 1), 5), mode)
+
+
+def build_search_params(tokens: list[str] | str, count: int, mode: str) -> SearchParams | None:
+    """标签里的「收藏500」「500users入り」拆成收藏筛选，其余作为搜索标签。没有标签时返回 None。"""
+    if isinstance(tokens, str):
+        tokens = [token for token in re.split(r"[\s,，]+", tokens) if token]
     min_bookmarks = None
     tags = []
     for token in tokens:
@@ -100,7 +107,7 @@ def parse_search_text(raw_text: str) -> SearchParams | None:
     return SearchParams(
         display_tags=display_tags,
         search_tags=search_tags,
-        count=min(max(count, 1), 5),
+        count=count,
         mode=mode,
         min_bookmarks=min_bookmarks,
     )

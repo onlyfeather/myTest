@@ -64,6 +64,13 @@ def test_parse_search_text():
     assert_equal(params.mode, "popular")
 
 
+def test_parse_search_text_with_users_tag():
+    params = parse_search_text("搜图 くすぐり 500users入り")
+    assert params is not None
+    assert_equal(params.display_tags, "くすぐり")
+    assert_equal(params.min_bookmarks, 500)
+
+
 def test_parse_latest_text():
     params = parse_latest_text("p站 最新 风景 5 24")
     assert params is not None
