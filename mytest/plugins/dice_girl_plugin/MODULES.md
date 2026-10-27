@@ -34,6 +34,13 @@ MaiBot 侧需要过滤掉命令消息，避免两边都回复，例如在 `bot_c
 ban_msgs_regex = ["^[./。]", "^/?p站", "^(搜图|最新|美图|热门|每日一图)(\\s|$)"]
 ```
 
+`^[./。]` 已经覆盖了所有以 `/` 开头的指令（/帮助、/画图、/nai、/说 等）。
+如果改成只列具体指令，记得带上：
+
+```toml
+ban_msgs_regex = ["^[.。]rd", "^/(dice|p站|status|状态|echo|帮助|help|菜单|画图|nai|gpt画图|说)", "^p站", "^(搜图|最新|美图|热门|每日一图|状态|status)(\\s|$)"]
+```
+
 ## Tests
 
 `python mytest/plugins/dice_girl_plugin/llm/evals/run_local.py`

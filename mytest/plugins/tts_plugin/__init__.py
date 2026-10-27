@@ -2,6 +2,7 @@ from nonebot.plugin import PluginMetadata
 
 from .._shared.settings import settings_store
 from . import handlers as handlers
+from . import help as help  # noqa: A004  登记到统一帮助
 from .service import list_voices, test_tts
 
 settings_store.set_tester("tts", test_tts)

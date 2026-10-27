@@ -2,6 +2,7 @@ from nonebot.plugin import PluginMetadata
 
 from .._shared.settings import settings_store
 from . import handlers as handlers
+from . import help as help  # noqa: A004  登记到统一帮助
 from .service import list_gpt_image_models, test_gpt_image, test_novelai
 
 settings_store.set_tester("novelai", test_novelai)

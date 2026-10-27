@@ -7,12 +7,7 @@ from ..common import pixiv_command
 help_cmd = Alconna(pixiv_command("帮助"))
 help_matcher = on_alconna(help_cmd, use_cmd_start=True, block=True)
 
-
-@help_matcher.handle()
-async def help_handle(result: Arparma):
-    help_text = """
-🎨 Pixiv智能图片搜索机器人帮助
-
+HELP_TEXT = """
 📸 核心功能 - 图片搜索与推荐：
 • p站 搜图 [标签] [数量] [模式] - 智能搜图
 • 搜图 [标签] [数量] [模式] - 核心短指令
@@ -61,8 +56,13 @@ async def help_handle(result: Arparma):
 🔍 详细帮助命令：
 • p站 偏好 帮助 - 查看偏好管理详细使用说明
 • p站 圈名 帮助 - 查看圈名管理详细使用说明
-    """
-    await UniMessage.text(help_text.strip()).send()
+""".strip()
+
+
+@help_matcher.handle()
+async def help_handle(result: Arparma):
+    # 旧指令保留，内容和 /帮助 Pixiv 一致。
+    await UniMessage.text(f"🎨 Pixiv 帮助\n\n{HELP_TEXT}\n\n其他功能发送 /帮助 查看。").send()
 
 
 __all__ = ["help_matcher"]

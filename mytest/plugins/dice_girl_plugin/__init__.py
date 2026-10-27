@@ -5,6 +5,7 @@ require("nonebot_plugin_localstore")
 from nonebot.plugin import PluginMetadata
 
 from . import handlers as handlers
+from . import help as help  # noqa: A004  登记到统一帮助
 
 __plugin_meta__ = PluginMetadata(
     name="dice_girl",

@@ -41,19 +41,11 @@ async def handle_status(bot: Bot, event: Event):
 
 
 @help_matcher.handle()
-async def handle_help():
-    msg = (
-        "📖 [骰娘使用手册]\n"
-        "----------------\n"
-        "1. 投骰:\n"
-        "   /dice 投骰                 随机 1-100\n"
-        "   /dice 投骰 20              随机 1-20\n"
-        "   /dice 投骰 100 60 侦查     进行一次带目标值的检定\n"
-        "   .rd / .rd 20 / .rd 100 60 侦查\n\n"
-        "2. 状态:\n"
-        "   /dice 状态                 查看好感度\n\n"
-        "3. 管理指令（仅 SUPERUSER 私聊可用）:\n"
-        "   /dice AI 状态|开启|关闭     投骰点评的 AI 开关\n"
-        "   /dice 设置好感 [user_id] [数值] [角色ID(可选)]"
-    )
-    await help_matcher.finish(msg)
+async def handle_help(bot: Bot, event: Event):
+    # 旧指令保留，内容和 /帮助 投骰 一致。
+    from ..._shared.events import is_superuser
+    from ..._shared.help import help_registry
+
+    topic = help_registry.find("dice")
+    msg = help_registry.detail(topic, is_admin=await is_superuser(bot, event)) if topic else "发送 /帮助 查看指令"
+    await help_matcher.finish(msg + "\n\n其他功能发送 /帮助 查看。")
