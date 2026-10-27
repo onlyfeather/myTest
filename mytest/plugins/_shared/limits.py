@@ -28,7 +28,9 @@ class UsageLimiter:
                 if left:
                     return f"冷却中，请 {left} 秒后再试"
             if self._running >= max(1, max_concurrent):
-                return "正在处理别的请求，请稍后再试"
+                from .phrases import pick
+
+                return pick("busy")
             self._running += 1
             self._last_used[user_id] = self._clock()
             return ""

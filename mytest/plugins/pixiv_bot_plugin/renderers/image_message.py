@@ -202,7 +202,8 @@ def _build_image_text(image: dict, title: str, index: int | None = None, total: 
     return message_text
 
 
-async def send_images_with_info(images: List[dict], title: str):
+async def send_images_with_info(images: List[dict], title: str, target: Any = None):
+    """target 为空时发到当前事件的会话；工具调用没有事件，需要传 uniseg.Target。"""
     bot_logger.debug(f"send_images_with_info 开始执行，title: {title}")
 
     if not hasattr(images, "__iter__"):
@@ -254,13 +255,13 @@ async def send_images_with_info(images: List[dict], title: str):
                 if added_images == 0:
                     message = message + UniMessage.text("\n图片下载失败，请稍后重试。")
 
-                await message.send()
+                await message.send(target=target)
             else:
-                await UniMessage.text(message_text + "\n图片获取失败").send()
+                await UniMessage.text(message_text + "\n图片获取失败").send(target=target)
         except Exception as e:
             bot_logger.error(f"第 {index} 张图片发送失败: {type(e).__name__}: {e}")
             try:
-                await UniMessage.text(message_text + "\n图片发送失败，请稍后重试").send()
+                await UniMessage.text(message_text + "\n图片发送失败，请稍后重试").send(target=target)
             except Exception as fallback_e:
                 bot_logger.error(f"第 {index} 张图片降级发送也失败: {fallback_e}")
 

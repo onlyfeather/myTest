@@ -9,6 +9,7 @@ from nonebot_plugin_waiter import prompt
 
 from .._shared import qq_images
 from .._shared.events import group_id_of, is_superuser
+from .._shared.phrases import pick
 from .._shared.limits import UsageLimiter, scope_allowed
 from .._shared.services.http import ServiceError, describe_exception
 from .artists import MAX_LENGTH, clean, is_clear_word
@@ -130,7 +131,7 @@ async def handle_draw(bot: Bot, event: Event, matcher: Matcher, groups: tuple = 
 
     success = False
     try:
-        await matcher.send("收到，正在画……")
+        await matcher.send(pick("draw_reference" if inputs.references else "draw"))
         result = await draw(provider, req, inputs)
         message = Message(MessageSegment.reply(event.message_id)) if hasattr(event, "message_id") else Message()
         message += MessageSegment.image(result.image)

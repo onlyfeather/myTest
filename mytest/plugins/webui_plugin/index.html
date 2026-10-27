@@ -88,6 +88,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 textarea { min-height: 84px; resize: vertical; }
 .invalid input, .invalid textarea, .invalid select { border-color: var(--danger); }
 .inline { display: flex; gap: 8px; align-items: center; }
+.preview { display: block; max-width: 240px; max-height: 320px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
 .stack { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .stack > * { width: 100%; }
 .stack > .link { width: auto; }
@@ -353,6 +354,45 @@ function fetchableControl(f, common, value) {
     h("button", { class: "link", type: "button", onclick: () => { manual.add(cacheKey); renderMain(); updateChrome(); } }, "手动输入"));
 }
 
+/* 文件槽：上传后立即保存，不走底部的「保存」按钮。 */
+function fileRow(s, f) {
+  const url = `${API}/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.key)}`;
+  const picker = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", class: "sr-only", id: "file-" + f.key,
+    onchange: async (e) => {
+      const file = e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      if (file.size > 20 * 1024 * 1024) return toast("文件太大了，最多 20 MB", false);
+      upload.disabled = true; upload.textContent = "上传中…";
+      try {
+        const r = await api(`/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.key)}`,
+          { method: "PUT", body: file, headers: { "Content-Type": file.type || "application/octet-stream" } });
+        toast(r.message || (r.ok ? "已上传" : "上传失败"), !!r.ok);
+        if (r.ok) await reloadSection(s.id);
+      } catch (err) { /* 已处理 */ } finally { upload.disabled = false; upload.textContent = f.exists ? "更换" : "上传"; }
+    } });
+  const upload = h("button", { class: "btn" + (f.exists ? "" : " primary"), type: "button", onclick: () => picker.click() }, f.exists ? "更换" : "上传");
+  const remove = f.exists ? h("button", { class: "btn", type: "button", onclick: async () => {
+    if (!confirm(`确定删除${f.label}吗？`)) return;
+    const r = await api(`/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.key)}`, { method: "DELETE" }).catch(() => null);
+    if (r) { toast(r.message || "已删除", !!r.ok); if (r.ok) await reloadSection(s.id); }
+  } }, "删除") : null;
+  return h("div", { class: "row" },
+    h("div", {}, h("label", { class: "name", for: "file-" + f.key }, f.label),
+      h("div", { class: "meta" }, h("span", { class: "badge " + (f.exists ? "set" : "") }, f.exists ? "已上传" : "未上传"))),
+    h("div", {},
+      f.exists ? h("img", { src: `${url}?v=${f.version}`, alt: f.label + "预览", class: "preview" }) : null,
+      h("div", { class: "inline", style: "margin-top:8px" }, upload, remove, picker),
+      f.help ? h("div", { class: "help" }, f.help) : null));
+}
+
+async function reloadSection(id) {
+  const r = await api("/settings").catch(() => null);
+  if (!r || !r.ok) return;
+  state.sections = r.sections;
+  if (id === state.current) { renderMain(); updateChrome(); }
+}
+
 function fieldRow(f) {
   const canReset = f.source === "saved" && !state.reset.has(f.key);
   return h("div", { class: "row" + (state.errors[f.key] ? " invalid" : "") },
@@ -384,7 +424,8 @@ function renderMain() {
     h("div", { class: "head" },
       h("div", {}, h("h2", {}, s.title), s.description ? h("p", {}, s.description) : null),
       testBtn),
-    h("div", { class: "card" }, s.fields.map(fieldRow)));
+    h("div", { class: "card" }, s.fields.map(fieldRow)),
+    (s.files || []).length ? h("div", { class: "card", style: "margin-top:16px" }, s.files.map((f) => fileRow(s, f))) : null);
 }
 
 function renderNav() {

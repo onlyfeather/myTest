@@ -8,6 +8,7 @@ from nonebot.params import RegexGroup
 
 from .._shared.events import group_id_of, is_superuser
 from .._shared.limits import UsageLimiter, scope_allowed
+from .._shared.phrases import pick
 from .._shared.services.http import describe_exception
 from .config import tts_settings
 from .service import synthesize
@@ -44,6 +45,7 @@ async def handle_say(bot: Bot, event: Event, matcher: Matcher, groups: tuple = R
 
     success = False
     try:
+        await matcher.send(pick("tts"))
         audio = await synthesize(text)
         success = True
     except Exception as e:

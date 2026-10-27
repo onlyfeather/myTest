@@ -19,6 +19,18 @@ from typing import Any
 FIELD_TYPES = {"text", "secret", "textarea", "lines", "bool", "int", "float", "select"}
 OptionsProvider = Callable[[], Awaitable[list[tuple[str, str]]]]
 MAX_FETCHED_OPTIONS = 500
+
+
+@dataclass
+class FileSlot:
+    """WebUI 里可以上传的一个文件（目前只用于图片）。"""
+
+    key: str
+    label: str
+    path: Callable[[], Path]  # 文件位置
+    save: Callable[[bytes], str]  # 校验并保存，返回给用户看的说明；不合法时抛 ValueError
+    help: str = ""
+    max_bytes: int = 20 * 1024 * 1024
 _TRUE_WORDS = {"1", "true", "yes", "on", "开", "开启", "启用"}
 _FALSE_WORDS = {"0", "false", "no", "off", "关", "关闭", "停用", ""}
 
@@ -55,6 +67,8 @@ class SettingSection:
     tester: Callable[[], Awaitable[str]] | None = None
     # 配置项 → 获取可选值的函数，返回 [(值, 显示文字)]，失败抛异常。
     option_providers: dict[str, OptionsProvider] = field(default_factory=dict)
+    # 文件槽（比如人设图）：WebUI 里显示上传、预览、删除。
+    files: dict[str, FileSlot] = field(default_factory=dict)
 
     def get_field(self, key: str) -> SettingField:
         for item in self.fields:
@@ -174,6 +188,17 @@ class SettingsStore:
     def set_tester(self, section_id: str, tester: Callable[[], Awaitable[str]]) -> None:
         with self._lock:
             self._sections[section_id].tester = tester
+
+    def add_file_slot(self, section_id: str, slot: FileSlot) -> None:
+        with self._lock:
+            self._sections[section_id].files[slot.key] = slot
+
+    def file_slot(self, section_id: str, key: str) -> FileSlot:
+        section = self._sections.get(section_id)
+        slot = section.files.get(key) if section else None
+        if slot is None:
+            raise KeyError(f"{section_id}.{key} 不是文件")
+        return slot
 
     def set_options_provider(self, section_id: str, key: str, provider: OptionsProvider) -> None:
         with self._lock:
@@ -324,6 +349,16 @@ class SettingsStore:
                     "description": section.description,
                     "testable": section.tester is not None,
                     "fields": fields,
+                    "files": [
+                        {
+                            "key": slot.key,
+                            "label": slot.label,
+                            "help": slot.help,
+                            "exists": slot.path().exists(),
+                            "version": int(slot.path().stat().st_mtime) if slot.path().exists() else 0,
+                        }
+                        for slot in section.files.values()
+                    ],
                 }
             )
         return result

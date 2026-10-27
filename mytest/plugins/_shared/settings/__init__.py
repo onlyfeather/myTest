@@ -11,9 +11,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .registry import SectionView, SettingField, SettingSection, SettingsStore, coerce
+from .registry import FileSlot, SectionView, SettingField, SettingSection, SettingsStore, coerce
 
 __all__ = [
+    "FileSlot",
     "SectionView",
     "SettingField",
     "SettingSection",

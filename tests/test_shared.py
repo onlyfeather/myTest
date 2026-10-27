@@ -118,7 +118,9 @@ def test_limiter():
 
     async def run():
         assert await lim.try_acquire("u", cooldown=30, max_concurrent=1, exempt=False) == ""
-        assert "稍后" in await lim.try_acquire("v", cooldown=30, max_concurrent=1, exempt=False)
+        from mytest.plugins._shared.phrases import phrase_book
+
+        assert await lim.try_acquire("v", cooldown=30, max_concurrent=1, exempt=False) in phrase_book.groups()["busy"]
         lim.release("u", success=True)
         assert "冷却" in await lim.try_acquire("u", cooldown=30, max_concurrent=1, exempt=False)
         assert await lim.try_acquire("u", cooldown=30, max_concurrent=1, exempt=True) == ""
@@ -419,6 +421,38 @@ def test_webui_options_endpoint(tmp_path):
     assert client.post("/webui/api/settings/demo/options/model", headers=HEAD).status_code == 404
     store.set_options_provider("demo", "voice", broken)
     assert client.post(url, headers=HEAD).json() == {"ok": False, "message": "接口挂了"}
+
+
+def test_webui_file_upload(tmp_path):
+    from mytest.plugins._shared.settings import FileSlot
+
+    client, store = make_app(tmp_path)
+    target = tmp_path / "persona.png"
+
+    def save(data: bytes) -> str:
+        if not data.startswith(b"\x89PNG"):
+            raise ValueError("不是图片")
+        target.write_bytes(data)
+        return "已保存"
+
+    store.add_file_slot("demo", FileSlot("persona", "人设图", path=lambda: target, save=save, max_bytes=100))
+    url = "/webui/api/files/demo/persona"
+    assert client.put(url, content=b"\x89PNGxx", headers=HEAD).status_code == 401
+    client.post("/webui/api/login", json={"password": "correct-horse-battery"}, headers=HEAD)
+
+    files = client.get("/webui/api/settings").json()["sections"][0]["files"]
+    assert files[0]["key"] == "persona" and files[0]["exists"] is False
+    assert client.get(url).status_code == 404
+    assert client.put(url, content=b"\x89PNGxx").status_code == 403, "needs the custom header"
+    assert client.put(url, content=b"GIF89a", headers=HEAD).status_code == 422
+    assert client.put(url, content=b"\x89PNG" + b"x" * 200, headers=HEAD).status_code == 413
+    assert client.put(url, content=b"", headers=HEAD).status_code == 400
+    r = client.put(url, content=b"\x89PNGok", headers=HEAD)
+    assert r.json() == {"ok": True, "message": "已保存"}
+    assert client.get(url).content == b"\x89PNGok"
+    assert client.get("/webui/api/settings").json()["sections"][0]["files"][0]["exists"] is True
+    assert client.delete(url, headers=HEAD).json()["ok"] is True and not target.exists()
+    assert client.put("/webui/api/files/demo/nope", content=b"x", headers=HEAD).status_code == 404
 
 
 def test_webui_lockout_and_disabled(tmp_path):

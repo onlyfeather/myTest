@@ -16,6 +16,7 @@ from ..parser import (
     parse_latest_text,
     parse_search_text,
 )
+from ..._shared.phrases import pick
 from ..pixiv import get_pixiv_spider
 from ..renderers import send_images_with_info
 from ..services.core import (
@@ -58,7 +59,7 @@ async def search_images_handle(event: Event, regex_str: str = RegexStr()):
             display_tags = parsed.display_tags
             if parsed.min_bookmarks is not None:
                 display_tags = f"{display_tags}（收藏≥{parsed.min_bookmarks}）"
-            await UniMessage.text(f"正在搜索「{display_tags}」的{count}张图片（{english_mode}模式），请稍候...").send()
+            await UniMessage.text(f"{pick('pixiv_search')}（「{display_tags}」{count} 张，{english_mode}模式）").send()
 
         async with get_pixiv_spider() as spider:
             result = await search_images(spider, parsed)
@@ -84,7 +85,9 @@ async def latest_images_handle(event: Event, regex_str: str = RegexStr()):
     hours = parsed.hours
 
     try:
-        await UniMessage.text(f"正在获取「{tags}」最近{hours}小时收藏>{LATEST_MIN_BOOKMARKS}的{count}张最新图片，请稍候...").send()
+        await UniMessage.text(
+            f"{pick('pixiv_search')}（「{tags}」最近 {hours} 小时，收藏>{LATEST_MIN_BOOKMARKS}，{count} 张）"
+        ).send()
 
         async with get_pixiv_spider() as spider:
             result = await latest_images(spider, parsed)
@@ -106,7 +109,7 @@ async def popular_images_handle(event: Event, regex_str: str = RegexStr()):
         return
 
     try:
-        await UniMessage.text(f"正在获取「{tags}」的高收藏精选美图，请稍候...").send()
+        await UniMessage.text(f"{pick('pixiv_search')}（「{tags}」高收藏精选）").send()
 
         async with get_pixiv_spider() as spider:
             result = await beautiful_image(spider, tags)
@@ -130,7 +133,7 @@ async def hot_images_handle(event: Event, regex_str: str = RegexStr()):
     tags, count = parsed
 
     try:
-        await UniMessage.text(f"正在获取「{tags}」的{count}张热门图片，请稍候...").send()
+        await UniMessage.text(f"{pick('pixiv_search')}（「{tags}」热门 {count} 张）").send()
 
         async with get_pixiv_spider() as spider:
             result = await hot_images(spider, tags, count)
@@ -145,7 +148,7 @@ async def hot_images_handle(event: Event, regex_str: str = RegexStr()):
 
 async def _handle_daily_recommend(event: Event):
     try:
-        await UniMessage.text("正在获取今日推荐图片，请稍候...").send()
+        await UniMessage.text(pick("pixiv_daily")).send()
 
         async with get_pixiv_spider() as spider:
             result = await daily_recommend_service(spider, event.get_user_id())

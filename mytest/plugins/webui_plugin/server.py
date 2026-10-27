@@ -236,6 +236,62 @@ def create_router(
             return JSONResponse({"ok": False, "message": describe_exception(title, e)})
         return JSONResponse({"ok": True, "options": options})
 
+    @router.get("/api/files/{section_id}/{key}", include_in_schema=False)
+    async def get_file(section_id: str, key: str, request: Request) -> Response:
+        if not authed(request):
+            return error(401, "请先登录")
+        try:
+            path = store.file_slot(section_id, key).path()
+        except KeyError:
+            return error(404, "没有这个文件")
+        if not path.exists():
+            return error(404, "还没有上传")
+        return Response(
+            path.read_bytes(),
+            media_type="image/png",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @router.put("/api/files/{section_id}/{key}", include_in_schema=False)
+    async def put_file(section_id: str, key: str, request: Request) -> JSONResponse:
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            slot = store.file_slot(section_id, key)
+        except KeyError:
+            return error(404, "没有这个文件")
+        declared = int(request.headers.get("content-length") or 0)
+        if declared > slot.max_bytes:
+            return error(413, f"文件太大了，最多 {slot.max_bytes // 1024 // 1024} MB")
+        data = b""
+        async for chunk in request.stream():
+            data += chunk
+            if len(data) > slot.max_bytes:
+                return error(413, f"文件太大了，最多 {slot.max_bytes // 1024 // 1024} MB")
+        if not data:
+            return error(400, "没有收到文件")
+        try:
+            message = slot.save(data)
+        except Exception as e:
+            return error(422, str(e) or "文件不合法")
+        return JSONResponse({"ok": True, "message": message})
+
+    @router.delete("/api/files/{section_id}/{key}", include_in_schema=False)
+    async def delete_file(section_id: str, key: str, request: Request) -> JSONResponse:
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            path = store.file_slot(section_id, key).path()
+        except KeyError:
+            return error(404, "没有这个文件")
+        existed = path.exists()
+        path.unlink(missing_ok=True)
+        return JSONResponse({"ok": True, "message": "已删除" if existed else "本来就没有上传"})
+
     @router.post("/api/settings/{section_id}/test", include_in_schema=False)
     async def test_section(section_id: str, request: Request) -> JSONResponse:
         if not authed(request):
