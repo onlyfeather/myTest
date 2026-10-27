@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -357,6 +358,41 @@ async def tool_pixiv_daily(ctx: ToolContext, args: dict[str, Any]) -> dict[str, 
     return {"content": "今日推荐稍后会直接发到聊天里。用你自己的口吻简短回应。"}
 
 
+# ---------------------------------------------------------------- 说说
+
+
+async def tool_qzone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """写一条说说并配自拍，把正文和图片返回给 MaiBot，由它通过 Maizone 发到 QQ 空间。
+
+    check_only 时只检查能不能发，凛音马上就能知道要不要婉拒；真正生成要一两分钟。
+    """
+    from .qzone import qzone_ready, remember, write_post
+    from .selfie import selfie_ready, take_selfie
+
+    if not _is_superuser(ctx.user_id):
+        raise ToolError("发说说只有主人（管理员）能让你发，其他人请用自己的话婉拒")
+    if reason := qzone_ready() or selfie_ready():
+        raise ToolError(reason)
+    topic = _text(args, "topic", limit=100)
+    mood = _text(args, "mood", limit=100)[:20]
+    if args.get("check_only") is True:
+        return {"content": "可以发"}
+
+    try:
+        post = await write_post(topic=topic, mood=mood)
+        image = await take_selfie(post.selfie_scene)
+    except Exception as e:
+        logger.opt(exception=e).warning("[凛音工具] qzone 失败")
+        raise ToolError(describe_exception("说说", e)) from None
+    remember(post.text)
+    return {
+        "content": "说说已经写好",
+        "text": post.text,
+        "mood": post.mood,
+        "image": base64.b64encode(image).decode("ascii"),
+    }
+
+
 # ---------------------------------------------------------------- 注册表
 
 
@@ -402,5 +438,11 @@ TOOLS: dict[str, ToolSpec] = {
             tool_pixiv_search,
         ),
         ToolSpec("pixiv_daily", "Pixiv 每日推荐", {}, tool_pixiv_daily),
+        ToolSpec(
+            "qzone",
+            "写一条说说并配自拍（只返回内容，不发送）",
+            {"topic": {"type": "string"}, "mood": {"type": "string"}, "check_only": {"type": "boolean"}},
+            tool_qzone,
+        ),
     )
 }

@@ -7,11 +7,19 @@ NoneBot 负责执行、限流，并把结果（图片、语音）直接发到聊
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import random
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from maibot_sdk import Field, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
+
+BEIJING = timezone(timedelta(hours=8))
+MAIZONE_API = "internetsb.maizone.send_feed_api"
 
 # ---------------------------------------------------------------- 配置
 
@@ -44,11 +52,26 @@ class ToolsSection(PluginConfigBase):
     tts: bool = Field(default=True, description="语音")
     dice: bool = Field(default=True, description="投骰")
     pixiv: bool = Field(default=True, description="Pixiv 搜图和每日推荐")
+    qzone: bool = Field(default=True, description="发说说（只有主人能让她发，需要装 Maizone 插件）")
+
+
+class QzoneSection(PluginConfigBase):
+    __ui_label__ = "说说"
+    __ui_order__ = 2
+
+    auto_enabled: bool = Field(default=False, description="定时自己发说说（开之前先把 Maizone 的定时发送关掉）")
+    owner_id: str = Field(default="", description="主人的 QQ 号（NoneBot 的 superuser），定时发说说用这个身份")
+    times: list[str] = Field(default_factory=lambda: ["10:30", "21:30"],
+                             description="每天的发送时段（北京时间，HH:MM），建议 1~2 个")
+    jitter_minutes: int = Field(default=40, description="每个时段前后随机浮动多少分钟")
+    probability: float = Field(default=0.5, description="每个时段真的发的概率（0~1），调低可以减少风控")
+    timeout: float = Field(default=300.0, description="写文案加画自拍的超时（秒）")
 
 
 class RinneToolsConfig(PluginConfigBase):
     plugin: GeneralSection = Field(default_factory=GeneralSection)
     tools: ToolsSection = Field(default_factory=ToolsSection)
+    qzone: QzoneSection = Field(default_factory=QzoneSection)
 
 
 # ---------------------------------------------------------------- 消息解析
@@ -144,12 +167,35 @@ TTS_TEXT_DESC = (
 DICE_DESC = "投骰子、做检定、抽签、帮忙随机决定时调用。点数由工具真随机产生并直接发到聊天里，你不能自己编点数，只需要点评。"
 PIXIV_DESC = "在 Pixiv 上找插画发到聊天里。对方想看某个角色、某类题材的图时调用。"
 DAILY_DESC = "从 Pixiv 挑一张今日推荐发到聊天里。对方想看看今天的图、每日一图时调用。"
+QZONE_DESC = (
+    "在你自己的 QQ 空间发一条说说，配一张你的自拍。只有主人（管理员）让你发说说、发动态时调用，"
+    "别人提起时工具会拒绝，你婉拒即可。说说由工具按你的人设写，写的是你自己的日常，"
+    "不会提聊天内容。发出去要一两分钟，不要在聊天里写说说的内容。"
+)
+QZONE_TOPIC_DESC = "主人指定的题材，例如「今天下雪了」。主人没指定就不填，不要把聊天内容填进来"
+QZONE_MOOD_DESC = "你现在的心情，两到六个字，例如「有点困」「心情不错」「被雨烦到」。会用在文案和自拍的表情上"
 
 SCENE_DESC = (
     "自拍的情景。按聊天内容、现在的时间、你在工作中还是下班后，想一个自然的情景，"
     "写清楚在哪、在做什么、穿什么、表情和姿势。"
     "例：「下班后在房间里，穿着睡衣，侧马尾，抱着靠枕有点不耐烦地看镜头」。群聊里只能是工作中的样子"
 )
+
+
+def plan_slots(day: date, times: list[str], jitter_minutes: int, probability: float,
+               rng: random.Random) -> list[datetime]:
+    """排出某一天要发说说的时刻：每个时段按概率决定发不发，再前后随机浮动。"""
+    slots = []
+    jitter = max(0, jitter_minutes)
+    for raw in times:
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(raw).strip())
+        if not m or int(m[1]) > 23 or int(m[2]) > 59:
+            continue
+        if rng.random() >= probability:
+            continue
+        base = datetime(day.year, day.month, day.day, int(m[1]), int(m[2]), tzinfo=BEIJING)
+        slots.append(base + timedelta(minutes=rng.uniform(-jitter, jitter)))
+    return sorted(slots)
 
 
 def _msg_id_param() -> ToolParameterInfo:
@@ -161,14 +207,25 @@ def _msg_id_param() -> ToolParameterInfo:
 class RinneToolsPlugin(MaiBotPlugin):
     config_model = RinneToolsConfig
 
+    _scheduler_task: asyncio.Task | None = None
+    _jobs: set[asyncio.Task]
+    _posting: asyncio.Lock
+
     async def on_load(self) -> None:
+        self._jobs = set()
+        self._posting = asyncio.Lock()
+        self._restart_scheduler()
         self.ctx.logger.info("[凛音工具] 已加载")
 
     async def on_unload(self) -> None:
-        pass
+        if self._scheduler_task is not None:
+            self._scheduler_task.cancel()
+        for task in list(getattr(self, "_jobs", ())):
+            task.cancel()
 
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
-        pass
+        if scope == CONFIG_RELOAD_SCOPE_SELF:
+            self._restart_scheduler()
 
     def _cfg(self) -> RinneToolsConfig:
         try:
@@ -226,15 +283,8 @@ class RinneToolsPlugin(MaiBotPlugin):
             return {"success": False, "content": "不知道是谁在请求。请在 msg_id 里填对方那条消息的 msg_id 后重新调用。"}
 
         args = {k: v for k, v in args.items() if v not in (None, "")}
-        url = f"{cfg.plugin.nonebot_url.rstrip('/')}/tools/{tool}"
         try:
-            async with httpx.AsyncClient(timeout=cfg.plugin.timeout, trust_env=False) as client:
-                resp = await client.post(
-                    url,
-                    json={**ctx, "args": args},
-                    headers={"Authorization": f"Bearer {cfg.plugin.token.strip()}"},
-                )
-            data = resp.json()
+            data = await self._request(tool, {**ctx, "args": args}, cfg.plugin.timeout)
         except (httpx.HTTPError, ValueError) as e:
             self.ctx.logger.warning("[凛音工具] 调用 %s 失败: %s", tool, e)
             return {"success": False, "content": "功能暂时出了点问题，请用自己的话告诉对方现在做不到。"}
@@ -249,6 +299,98 @@ class RinneToolsPlugin(MaiBotPlugin):
         if data.get("stop_after_execution") is True:
             result["stop_after_execution"] = True
         return result
+
+    async def _request(self, tool: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+        cfg = self._cfg()
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            resp = await client.post(
+                f"{cfg.plugin.nonebot_url.rstrip('/')}/tools/{tool}",
+                json=body,
+                headers={"Authorization": f"Bearer {cfg.plugin.token.strip()}"},
+            )
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("NoneBot 返回格式不对")
+        return data
+
+    # -------------------------------------------------------- 说说
+
+    async def _post_qzone(self, body: dict[str, Any]) -> str:
+        """让 NoneBot 写文案、画自拍，再交给 Maizone 发到 QQ 空间。返回正文；失败抛 RuntimeError。"""
+        async with self._posting:  # 同一时间只发一条，避免定时和手动撞在一起
+            try:
+                data = await self._request("qzone", body, self._cfg().qzone.timeout)
+            except (httpx.HTTPError, ValueError) as e:
+                raise RuntimeError(f"连不上 NoneBot：{e}") from e
+            if not data.get("ok"):
+                raise RuntimeError(str(data.get("message") or "NoneBot 没能写好说说"))
+            text = str(data.get("text") or "").strip()
+            try:
+                image = base64.b64decode(str(data.get("image") or ""), validate=True)
+            except ValueError as e:
+                raise RuntimeError("NoneBot 返回的图片不对") from e
+            if not text or not image:
+                raise RuntimeError("NoneBot 没有返回正文或图片")
+            try:
+                result = await self.ctx.api.call(MAIZONE_API, message=text, images=[image])
+            except Exception as e:
+                raise RuntimeError(f"调用 Maizone 失败（装了 Maizone 插件吗？）：{e}") from e
+            if isinstance(result, dict) and "result" in result:
+                ok, detail = bool(result.get("result")), str(result.get("message") or "")
+            elif isinstance(result, dict) and result.get("success") is False:
+                ok, detail = False, str(result.get("error") or "")
+            else:
+                ok, detail = bool(result), ""
+            if not ok:
+                raise RuntimeError(f"Maizone 没发出去：{detail or '未知原因'}")
+            self.ctx.logger.info("[凛音工具] 说说已发出：%s（%s）", text, detail)
+            return text
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.get_running_loop().create_task(coro)
+        self._jobs.add(task)
+        task.add_done_callback(self._jobs.discard)
+
+    async def _qzone_job(self, body: dict[str, Any], stream_id: str) -> None:
+        try:
+            await self._post_qzone(body)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.ctx.logger.warning("[凛音工具] 发说说失败：%s", e)
+            if stream_id:
+                await self.ctx.send.text(f"……说说没能发出去。（{e}）", stream_id)
+
+    def _restart_scheduler(self) -> None:
+        if self._scheduler_task is not None:
+            self._scheduler_task.cancel()
+            self._scheduler_task = None
+        cfg = self._cfg()
+        if not (cfg.plugin.enabled and cfg.tools.qzone and cfg.qzone.auto_enabled):
+            return
+        if not cfg.qzone.owner_id.strip().isdigit():
+            self.ctx.logger.warning("[凛音工具] 定时说说没有开启：没有填主人的 QQ 号（owner_id）")
+            return
+        self._scheduler_task = asyncio.get_running_loop().create_task(self._schedule_loop())
+
+    async def _schedule_loop(self, rng: random.Random | None = None) -> None:
+        rng = rng or random.Random()
+        day = datetime.now(BEIJING).date()
+        while True:
+            cfg = self._cfg().qzone
+            now = datetime.now(BEIJING)
+            slots = [t for t in plan_slots(day, cfg.times, cfg.jitter_minutes, cfg.probability, rng) if t > now]
+            self.ctx.logger.info("[凛音工具] %s 的定时说说：%s", day,
+                                 "、".join(t.strftime("%H:%M") for t in slots) or "不发")
+            for slot in slots:
+                await asyncio.sleep(max(0.0, (slot - datetime.now(BEIJING)).total_seconds()))
+                try:
+                    await self._post_qzone({"user_id": cfg.owner_id.strip(), "group_id": None, "args": {}})
+                except Exception as e:
+                    self.ctx.logger.warning("[凛音工具] 定时说说失败：%s", e)
+            day += timedelta(days=1)
+            midnight = datetime(day.year, day.month, day.day, tzinfo=BEIJING)
+            await asyncio.sleep(max(0.0, (midnight - datetime.now(BEIJING)).total_seconds()) + 5)
 
     # -------------------------------------------------------- 工具
 
@@ -335,6 +477,33 @@ class RinneToolsPlugin(MaiBotPlugin):
     @Tool("rinne_pixiv_daily", brief_description=DAILY_DESC, parameters=[_msg_id_param()], core_tool=True)
     async def rinne_pixiv_daily(self, **kwargs: Any) -> dict[str, Any]:
         return await self._call("pixiv_daily", "pixiv", {}, kwargs)
+
+    @Tool(
+        "rinne_qzone_post",
+        brief_description=QZONE_DESC,
+        parameters=[
+            _msg_id_param(),
+            ToolParameterInfo(name="topic", param_type=ToolParamType.STRING, description=QZONE_TOPIC_DESC, required=False),
+            ToolParameterInfo(name="mood", param_type=ToolParamType.STRING, description=QZONE_MOOD_DESC, required=False),
+        ],
+        core_tool=True,
+    )
+    async def rinne_qzone_post(self, topic: str = "", mood: str = "", **kwargs: Any) -> dict[str, Any]:
+        # 写文案加画图要一两分钟，先让 NoneBot 检查权限和配置，凛音能马上回话；真正的发送放到后台
+        args = {"topic": topic, "mood": mood}
+        checked = await self._call("qzone", "qzone", {**args, "check_only": True}, kwargs)
+        if not checked["success"]:
+            return checked
+        ctx, _ = await self._resolve_context(kwargs)
+        if ctx is None:
+            return {"success": False, "content": "不知道是谁在请求。请在 msg_id 里填对方那条消息的 msg_id 后重新调用。"}
+        body = {**ctx, "args": {k: v for k, v in args.items() if v}}
+        self._spawn(self._qzone_job(body, str(kwargs.get("stream_id") or kwargs.get("chat_id") or "")))
+        return {
+            "success": True,
+            "content": "说说正在写、自拍正在画，一两分钟后会发到你的 QQ 空间。用你自己的口吻简短回应主人，"
+                       "不要在聊天里写说说的内容。",
+        }
 
 
 def create_plugin():

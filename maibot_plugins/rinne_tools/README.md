@@ -10,6 +10,15 @@
 | `rinne_voice` | 对方想听她用语音说、让她唱歌 | 合成语音发出（唱歌和大段语音只限 superuser） |
 | `rinne_dice` | 跑团检定、随机决定 | 真随机投骰，结果发到群里 |
 | `rinne_pixiv_search` / `rinne_pixiv_daily` | 对方想看某类插画 | Pixiv 搜图 / 每日推荐 |
+| `rinne_qzone_post` | 主人让她发说说（只限 superuser） | 按人设写一条日常说说 + 画自拍，返回给插件，再由 Maizone 发到 QQ 空间 |
+
+## 说说
+
+说说写的是凛音自己的日常和工作（“营业空间”），不读群聊、不提群友。文案在 NoneBot 的 WebUI「凛音的说说」里调整，
+写完会检查一遍 AI 腔（总结升华、排比、“加油”、波浪号、emoji 堆砌等），不合格就重写，连续 3 次不合格就放弃不发。
+
+- 需要装 [Maizone](https://github.com/internetsb/Maizone)，发送用它的 `send_feed_api`。Maizone 自己的定时发送（`enable_auto_send`）要关掉。
+- 定时发说说在插件配置的「说说」里打开：填主人 QQ 号、每天的时段、随机浮动分钟数、每个时段发的概率。
 
 所有工具都是核心工具，凛音每轮都能看到。确认的话由凛音自己回复，NoneBot 不发词库里的确认词。
 

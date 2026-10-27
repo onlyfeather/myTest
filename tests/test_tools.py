@@ -397,3 +397,246 @@ def test_rinne_tools_declare_msg_id():
     assert tools
     for tool in tools:
         assert "msg_id" in json.dumps(tool, ensure_ascii=False, default=str), tool.get("name")
+
+
+# ---------------------------------------------------------------- 说说
+
+
+def test_qzone_ai_flavor_checks():
+    from mytest.plugins.tools_api_plugin.qzone import ai_flavor_problems
+
+    assert ai_flavor_problems("红茶罐见底了。明明上周才买的。") == []
+    assert ai_flavor_problems("下班。头发终于可以放下来了") == []
+    assert ai_flavor_problems("今天也要加油哦～")
+    assert ai_flavor_problems("这不是普通的下午，而是属于自己的时间")
+    assert ai_flavor_problems("好冷！好冷！")
+    assert ai_flavor_problems("大家今天吃什么？")
+    assert ai_flavor_problems("字" * 141)
+    assert ai_flavor_problems("下雨了☔🌧")
+
+
+def test_qzone_parse_post():
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins.tools_api_plugin.qzone import parse_post
+
+    post = parse_post('好的\n```json\n{"text": "“红茶罐见底了。”", "mood": "有点无奈", "scene": "厨房里拿着空茶罐"}\n```')
+    assert post.text == "红茶罐见底了。" and post.mood == "有点无奈"
+    assert "厨房" in post.selfie_scene and "有点无奈" in post.selfie_scene
+    for bad in ("没有 JSON", '{"text": ""}', "[1, 2]", "{坏的}"):
+        with pytest.raises(ServiceError):
+            parse_post(bad)
+
+
+def _qzone_env(monkeypatch, tmp_path, replies):
+    from types import SimpleNamespace
+
+    from mytest.plugins._shared.services import llm
+    from mytest.plugins.tools_api_plugin import qzone
+
+    monkeypatch.setattr(qzone, "qzone_settings", SimpleNamespace(
+        enabled=True, model="", topics=["擦银器", "停电", "烤司康"], extra="",
+    ))
+    monkeypatch.setattr(qzone, "history_path", lambda: tmp_path / "qzone_history.json")
+    calls = []
+
+    async def fake_chat(messages, **kwargs):
+        calls.append(messages)
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    return qzone, calls
+
+
+def test_qzone_write_post_retries_ai_flavor(monkeypatch, tmp_path):
+    good = '{"text": "停电了。银器只擦了一半", "mood": "有点烦", "scene": "烛光下擦银器"}'
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [
+        '{"text": "生活就是这样美好～", "mood": "开心", "scene": "窗边"}', good,
+    ])
+    qzone.remember("红茶罐见底了。")
+    post = asyncio.run(qzone.write_post(mood="有点烦"))
+    assert post.text == "停电了。银器只擦了一半"
+    assert len(calls) == 2
+    system, user = calls[0][0]["content"], calls[0][1]["content"]
+    assert "白鸟" in system and "红茶罐见底了。" in system
+    assert "有点烦" in user
+    # 第二次请求带上了要改的地方
+    assert "生活就是" in calls[1][-1]["content"]
+    # 写成了也不记历史：自拍画好之后才记
+    assert [h["text"] for h in qzone.load_history()] == ["红茶罐见底了。"]
+
+
+def test_qzone_write_post_gives_up(monkeypatch, tmp_path):
+    from mytest.plugins._shared.services.http import ServiceError
+
+    bad = '{"text": "今天也要加油！！", "mood": "", "scene": "窗边"}'
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [bad] * 10)
+    with pytest.raises(ServiceError, match="AI 腔"):
+        asyncio.run(qzone.write_post())
+    assert len(calls) == qzone.MAX_ATTEMPTS
+    assert qzone.load_history() == []
+
+
+def test_qzone_history_keeps_latest(monkeypatch, tmp_path):
+    qzone, _ = _qzone_env(monkeypatch, tmp_path, [])
+    for i in range(qzone.HISTORY_SIZE + 3):
+        qzone.remember(f"第{i}条")
+    items = qzone.load_history()
+    assert len(items) == qzone.HISTORY_SIZE and items[-1]["text"] == f"第{qzone.HISTORY_SIZE + 2}条"
+
+
+def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
+    import base64
+
+    import mytest.plugins.tools_api_plugin.tools as tools
+    from mytest.plugins.tools_api_plugin import qzone, selfie
+
+    monkeypatch.setattr(tools, "_is_superuser", lambda user_id: user_id == "1196477724")
+    monkeypatch.setattr(qzone, "qzone_ready", lambda: "")
+    monkeypatch.setattr(selfie, "selfie_ready", lambda: "")
+    remembered, scenes, asked = [], [], {}
+
+    async def fake_write(**kwargs):
+        asked.update(kwargs)
+        return qzone.Post(text="停电了。", mood="有点烦", scene="烛光下")
+
+    async def fake_selfie(scene):
+        scenes.append(scene)
+        return b"png"
+
+    monkeypatch.setattr(qzone, "write_post", fake_write)
+    monkeypatch.setattr(qzone, "remember", lambda text, now=None: remembered.append(text))
+    monkeypatch.setattr(selfie, "take_selfie", fake_selfie)
+
+    with pytest.raises(ToolError, match="主人"):
+        asyncio.run(tools.TOOLS["qzone"].run(ToolContext("123456", "654321"), {}))
+
+    owner = ToolContext("1196477724", "654321")
+    assert asyncio.run(tools.TOOLS["qzone"].run(owner, {"check_only": True}))["content"] == "可以发"
+    assert scenes == [] and remembered == []
+
+    result = asyncio.run(tools.TOOLS["qzone"].run(owner, {"mood": "心情" * 20, "topic": "下雪"}))
+    assert result["text"] == "停电了。" and base64.b64decode(result["image"]) == b"png"
+    assert asked == {"topic": "下雪", "mood": ("心情" * 20)[:20]}
+    assert scenes == ["烛光下。表情和气氛：有点烦"] and remembered == ["停电了。"]
+    assert sent == [], "说说不发到聊天里"
+
+    monkeypatch.setattr(qzone, "qzone_ready", lambda: "发说说功能已关闭")
+    with pytest.raises(ToolError, match="关闭"):
+        asyncio.run(tools.TOOLS["qzone"].run(owner, {"check_only": True}))
+
+
+def test_rinne_tools_plan_slots():
+    from datetime import date
+
+    mod = _load_rinne_tools()
+    day = date(2026, 10, 28)
+    rng = random.Random(1)
+    assert mod.plan_slots(day, ["10:30", "21:30"], 40, 0.0, rng) == []
+    slots = mod.plan_slots(day, ["21:30", "10:30", "25:00", "abc", "9:61"], 40, 1.0, rng)
+    assert len(slots) == 2 and slots[0] < slots[1]
+    for slot, (h, m) in zip(slots, [(10, 30), (21, 30)], strict=True):
+        base = slot.replace(hour=h, minute=m, second=0, microsecond=0)
+        assert abs((slot - base).total_seconds()) <= 40 * 60
+        assert slot.utcoffset().total_seconds() == 8 * 3600
+    exact = mod.plan_slots(day, ["08:00"], 0, 1.0, rng)
+    assert exact[0].hour == 8 and exact[0].minute == 0
+
+
+def _qzone_plugin(mod, monkeypatch, api_result, nonebot_replies):
+    from types import SimpleNamespace
+
+    plugin, logs, _ = _tools_plugin(mod, {})
+    cfg = mod.RinneToolsConfig()
+    cfg.plugin.token = TOKEN
+    plugin._cfg = lambda: cfg
+    plugin._jobs = set()
+    plugin._posting = asyncio.Lock()
+    calls, texts, requests = [], [], []
+
+    async def api_call(name, **kwargs):
+        calls.append((name, kwargs))
+        if isinstance(api_result, Exception):
+            raise api_result
+        return api_result
+
+    async def send_text(text, stream_id, **kwargs):
+        texts.append((text, stream_id))
+        return True
+
+    async def fake_request(tool, body, timeout):
+        requests.append((tool, body))
+        return nonebot_replies[len(requests) - 1]
+
+    plugin._ctx.api = SimpleNamespace(call=api_call)
+    plugin._ctx.send = SimpleNamespace(text=send_text)
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    return plugin, logs, calls, texts, requests
+
+
+def test_rinne_tools_qzone_post_flow(monkeypatch):
+    import base64
+
+    mod = _load_rinne_tools()
+    image = base64.b64encode(b"png").decode()
+    plugin, logs, calls, texts, requests = _qzone_plugin(mod, monkeypatch, {"result": True, "message": "ok"}, [
+        {"ok": True, "content": "可以发"},
+        {"ok": True, "content": "说说已经写好", "text": "停电了。", "mood": "有点烦", "image": image},
+    ])
+
+    async def run():
+        result = await plugin.rinne_qzone_post(mood="有点烦", stream_id="s2", user_id="1196477724")
+        await asyncio.gather(*plugin._jobs)
+        return result
+
+    result = asyncio.run(run())
+    assert result["success"] is True and "QQ 空间" in result["content"]
+    assert requests[0] == ("qzone", requests[0][1]) and requests[0][1]["args"] == {"mood": "有点烦", "check_only": True}
+    assert requests[1][1]["args"] == {"mood": "有点烦"} and requests[1][1]["user_id"] == "1196477724"
+    assert calls == [(mod.MAIZONE_API, {"message": "停电了。", "images": [b"png"]})]
+    assert texts == []
+
+
+def test_rinne_tools_qzone_refused_and_failures(monkeypatch):
+    mod = _load_rinne_tools()
+    plugin, _, calls, _, requests = _qzone_plugin(mod, monkeypatch, {"result": True}, [
+        {"ok": False, "message": "发说说只有主人（管理员）能让你发"},
+    ])
+    result = asyncio.run(plugin.rinne_qzone_post(stream_id="s2", user_id="42"))
+    assert result["success"] is False and "主人" in result["content"]
+    assert len(requests) == 1 and plugin._jobs == set() and calls == []
+
+    # Maizone 报错 / 没装：后台任务在会话里说一声
+    import base64
+
+    image = base64.b64encode(b"png").decode()
+    reply = {"ok": True, "text": "停电了。", "image": image}
+    for api_result, expect in (({"result": False, "message": "cookie 失效"}, "cookie 失效"),
+                               (RuntimeError("API 不存在"), "Maizone")):
+        plugin, logs, _, texts, _ = _qzone_plugin(mod, monkeypatch, api_result, [reply])
+        asyncio.run(plugin._qzone_job({"user_id": "1196477724", "args": {}}, "s2"))
+        assert len(texts) == 1 and expect in texts[0][0] and texts[0][1] == "s2"
+
+    plugin, _, calls, texts, _ = _qzone_plugin(mod, monkeypatch, {"result": True}, [{"ok": True, "text": "停电了。"}])
+    asyncio.run(plugin._qzone_job({"user_id": "1196477724", "args": {}}, "s2"))
+    assert calls == [] and "图片" in texts[0][0]
+
+
+def test_rinne_tools_scheduler_needs_owner():
+    mod = _load_rinne_tools()
+
+    async def run(owner_id):
+        plugin, logs, _ = _tools_plugin(mod, {})
+        cfg = mod.RinneToolsConfig()
+        cfg.qzone.auto_enabled = True
+        cfg.qzone.owner_id = owner_id
+        plugin._cfg = lambda: cfg
+        plugin._restart_scheduler()
+        task = plugin._scheduler_task
+        if task is not None:
+            task.cancel()
+        return task, logs
+
+    task, logs = asyncio.run(run(""))
+    assert task is None and any("owner_id" in line for line in logs)
+    task, _ = asyncio.run(run("1196477724"))
+    assert task is not None

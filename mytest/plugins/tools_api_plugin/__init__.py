@@ -20,6 +20,7 @@ require("nonebot_plugin_alconna")
 
 from .._shared.help import HelpTopic, help_registry
 from .._shared.settings import settings_store
+from .qzone import qzone_settings
 from .selfie import list_persona_status, selfie_settings
 from .server import create_router
 from .tools import TOOLS
@@ -62,7 +63,7 @@ help_registry.register(
             "她嘴上可能会嫌麻烦，但会去做。\n"
             "想要固定的效果（尺寸、画师串、参考图）还是用 /nai、/gpt画图 这些指令更准确。"
         ),
-        admin=("让凛音唱歌、说大段的话（讲故事、念长文）只有管理员能用",),
+        admin=("让凛音唱歌、说大段的话（讲故事、念长文）、发说说只有管理员能用",),
         order=5,
     )
 )
@@ -75,4 +76,4 @@ if isinstance(driver, ASGIMixin):
     else:
         logger.warning("[工具接口] 没有设置 TOOLS_API_TOKEN（至少 {} 位），凛音无法调用工具", MIN_TOKEN_LENGTH)
 
-__all__ = ["selfie_settings"]
+__all__ = ["qzone_settings", "selfie_settings"]
