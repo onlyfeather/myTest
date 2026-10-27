@@ -6,7 +6,7 @@ from .constants import (
     PIXIV_PREFIX,
     RANDOM_MIN_BOOKMARKS,
 )
-from .utils import extract_plain_text, pixiv_command, pixiv_failure_message
+from .utils import extract_plain_text, pixiv_command, pixiv_failure_message, report_error
 
 __all__ = [
     "BEAUTIFUL_THRESHOLDS",
@@ -18,4 +18,5 @@ __all__ = [
     "extract_plain_text",
     "pixiv_command",
     "pixiv_failure_message",
+    "report_error",
 ]

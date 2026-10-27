@@ -1,7 +1,7 @@
 import random
 import re
 
-from nonebot.adapters import Event
+MAX_DICE_FACES = 1_000_000
 
 
 class DiceLogic:
@@ -41,7 +41,7 @@ class DiceLogic:
             else:
                 event_name = " ".join(args)
 
-        max_val = max(1, max_val)
+        max_val = min(max(1, max_val), MAX_DICE_FACES)
 
         return max_val, target_val, event_name
 
@@ -58,38 +58,15 @@ class DiceLogic:
             return "成功"
         return "失败"
 
-    def execute_roll(
-        self,
-        user_id: str,
-        favorability: int,
-        max_val: int,
-        target: int,
-        event_name: str,
-        event: Event = None,
-    ):
+    def execute_roll(self, max_val: int, target: int | None, event_name: str) -> dict:
         # 好感度只影响 AI 语言风格，不影响骰点。
-        raw_roll = random.randint(1, max_val)
-
-        modifier = 0
-        final_roll = raw_roll
-        is_revealed = False
-        raw_status = "无判定"
-        final_status = "无判定"
-
-        if target is not None:
-            raw_status = self._get_status(raw_roll, target, max_val)
-            final_status = raw_status
-
+        roll = random.randint(1, max_val)
         return {
             "max": max_val,
             "target": target,
             "event": event_name,
-            "raw_roll": raw_roll,
-            "raw_status": raw_status,
-            "mod": modifier,
-            "final_roll": final_roll,
-            "final_status": final_status,
-            "is_revealed": is_revealed,
+            "final_roll": roll,
+            "final_status": self._get_status(roll, target, max_val),
         }
 
 

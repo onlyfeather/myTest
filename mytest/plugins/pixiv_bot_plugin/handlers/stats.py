@@ -1,7 +1,7 @@
 from nonebot_plugin_alconna import Alconna, Arparma, on_alconna
 from nonebot_plugin_alconna.uniseg import UniMessage
 
-from ..common import pixiv_command
+from ..common import pixiv_command, report_error
 from ..pixiv import get_pixiv_spider
 from ..services.stats import build_popular_tags_message, build_stats_message
 
@@ -20,7 +20,7 @@ async def stats_handle(result: Arparma):
             await UniMessage.text(build_stats_message(spider)).send()
 
     except Exception as e:
-        await UniMessage.text(f"获取统计信息时发生错误：{str(e)}").send()
+        await report_error("获取统计信息时发生错误", e)
 
 
 @popular_tags_matcher.handle()
@@ -30,7 +30,7 @@ async def popular_tags_handle(result: Arparma):
             await UniMessage.text(build_popular_tags_message(spider)).send()
 
     except Exception as e:
-        await UniMessage.text(f"获取热门标签时发生错误：{str(e)}").send()
+        await report_error("获取热门标签时发生错误", e)
 
 
 __all__ = [

@@ -41,7 +41,7 @@ nonebot-plugin-sentry = ["nonebot_plugin_sentry"]
 nonebot-plugin-alconna = ["nonebot_plugin_alconna"]
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.format]
 line-ending = "lf"
@@ -109,7 +109,7 @@ keep-runtime-typing = true
 
 [tool.pyright]
 # For Pylance/Pyright configurations, see https://microsoft.github.io/pyright/#/configuration.
-pythonVersion = "3.9"
+pythonVersion = "3.10"
 pythonPlatform = "All"
 typeCheckingMode = "standard"
 

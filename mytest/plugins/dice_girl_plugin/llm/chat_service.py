@@ -19,6 +19,7 @@ async def analyze_chat(
     user_name: str,
     history: list = None,
     memory_summary: str = "",
+    member_profile: str = "",
     event: Event = None,
 ) -> dict:
     role = persona_manager.get_persona(event)
@@ -30,6 +31,7 @@ async def analyze_chat(
         user_name,
         user_text,
         memory_summary,
+        member_profile=member_profile,
     )
 
     messages = [{"role": "system", "content": sys_prompt}]

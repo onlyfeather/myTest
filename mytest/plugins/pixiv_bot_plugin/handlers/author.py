@@ -1,11 +1,11 @@
 from nonebot import logger
 from nonebot_plugin_alconna import Alconna, Args, Arparma, on_alconna
-from nonebot_plugin_alconna.uniseg import Image, UniMessage
+from nonebot_plugin_alconna.uniseg import UniMessage
 
-from ..common import pixiv_command
+from ..common import pixiv_command, report_error
 from ..parser import convert_mode_to_english
 from ..pixiv import get_pixiv_spider
-from ..renderers import send_images_with_info
+from ..renderers import send_images_with_info, send_text_with_images
 from ..services.author import (
     author_info_progress_message,
     build_author_info_message,
@@ -71,7 +71,7 @@ async def author_images_handle(result: Arparma):
             await send_images_with_info(result.images or [], result.title)
 
     except Exception as e:
-        await UniMessage.text(f"获取作者作品时发生错误：{str(e)}").send()
+        await report_error("获取作者作品时发生错误", e)
 
 
 @follow_matcher.handle()
@@ -88,7 +88,7 @@ async def follow_author_handle(result: Arparma):
             await UniMessage.text(follow_author_service(spider, user_id, author_name)).send()
 
     except Exception as e:
-        await UniMessage.text(f"关注作者时发生错误：{str(e)}").send()
+        await report_error("关注作者时发生错误", e)
 
 
 @unfollow_matcher.handle()
@@ -104,7 +104,7 @@ async def unfollow_author_handle(result: Arparma):
             await UniMessage.text(unfollow_author_service(spider, user_id)).send()
 
     except Exception as e:
-        await UniMessage.text(f"取关作者时发生错误：{str(e)}").send()
+        await report_error("取关作者时发生错误", e)
 
 
 @follow_list_matcher.handle()
@@ -114,7 +114,7 @@ async def follow_list_handle(result: Arparma):
             await UniMessage.text(build_follow_list_message(spider)).send()
 
     except Exception as e:
-        await UniMessage.text(f"获取关注列表时发生错误：{str(e)}").send()
+        await report_error("获取关注列表时发生错误", e)
 
 
 @author_info_matcher.handle()
@@ -139,18 +139,18 @@ async def author_info_handle(result: Arparma):
             image = author_info.get("image", "")
             if image:
                 try:
-                    avatar_message = UniMessage.text(f"👤 作者信息（ID: {result.resolved_user_id}）\n")
-                    avatar_message = avatar_message + Image(url=image)
-                    await avatar_message.send()
-                except Exception as e:
-                    logger.error(f"发送头像失败: {e}")
+                    await send_text_with_images(
+                        f"👤 作者信息（ID: {result.resolved_user_id}）\n", [image]
+                    )
+                except Exception:
+                    logger.exception("[Pixiv] 发送作者头像失败")
 
             await UniMessage.text(build_author_info_message(result)).send()
             if author_info.get("latestImages"):
                 await UniMessage.text(build_latest_images_message(author_info)).send()
 
     except Exception as e:
-        await UniMessage.text(f"获取作者信息时发生错误：{str(e)}").send()
+        await report_error("获取作者信息时发生错误", e)
 
 
 __all__ = [

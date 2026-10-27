@@ -4,16 +4,6 @@ from typing import Any, Dict, Iterable, List, Optional
 from nonebot import logger
 
 
-def build_search_statistics(search_result: Dict[str, Any]) -> Dict[str, int]:
-    popular = search_result.get("popular", {})
-    return {
-        "total_search_results": int(search_result.get("total", 0) or 0),
-        "popular_recent_count": len(popular.get("recent", []) or []),
-        "popular_permanent_count": len(popular.get("permanent", []) or []),
-        "regular_illust_count": len(search_result.get("illusts", []) or []),
-    }
-
-
 def get_search_candidates(search_result: Dict[str, Any]) -> List[Dict[str, Any]]:
     popular = search_result.get("popular", {})
     candidates: List[Dict[str, Any]] = []

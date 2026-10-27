@@ -88,7 +88,7 @@ async def _get_author_images(spider, user_id: str, mode: str, count: int) -> Opt
             spider,
             illusts,
             count,
-            min_quality_score=60.0,
+            min_quality_score=spider.min_quality_score,
             max_attempts=10,
             allow_fallback=True,
             source_prefix="author",

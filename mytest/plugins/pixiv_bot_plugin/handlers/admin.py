@@ -1,4 +1,4 @@
-from nonebot import on_regex
+from nonebot import logger, on_regex
 from nonebot.adapters import Bot, Event
 from nonebot.adapters.onebot.v11 import PrivateMessageEvent
 from nonebot.params import RegexStr
@@ -6,7 +6,7 @@ from nonebot.permission import SUPERUSER
 from nonebot_plugin_alconna import Alconna, Args, Arparma, on_alconna
 from nonebot_plugin_alconna.uniseg import UniMessage
 
-from ..common import PIXIV_PREFIX, extract_plain_text, pixiv_command
+from ..common import PIXIV_PREFIX, extract_plain_text, pixiv_command, report_error
 from ..pixiv import get_pixiv_spider
 
 
@@ -18,7 +18,7 @@ login_status = Alconna(pixiv_command("登录状态"))
 
 quality_setting = Alconna(
     pixiv_command("质量设置"),
-    Args["score", int, 60],
+    Args["score?", int],
 )
 
 login_matcher = on_regex(
@@ -58,7 +58,7 @@ async def login_handle(event: Event, regex_str: str = RegexStr()):
             else:
                 await UniMessage.text("❌ 登录失败，请检查Cookie是否正确").send()
     except Exception as e:
-        await UniMessage.text(f"登录时发生错误：{str(e)}").send()
+        await report_error("登录时发生错误", e)
 
 
 @login_status_matcher.handle()
@@ -80,19 +80,29 @@ async def login_status_handle(result: Arparma):
             else:
                 await UniMessage.text("❌ 未登录，请使用「/p站 登录」命令设置Cookie").send()
     except Exception as e:
-        await UniMessage.text(f"检查登录状态时发生错误：{str(e)}").send()
+        await report_error("检查登录状态时发生错误", e)
 
 
 @quality_matcher.handle()
 async def quality_setting_handle(result: Arparma):
     score = result.query[int]("score")
-    score = min(max(score or 0, 0), 100)
 
     try:
-        await UniMessage.text(f"✅ 质量评分阈值已设置为：{score}分").send()
-        await UniMessage.text("💡 低于此分数的图片在随机模式下将被降级处理").send()
-    except Exception as e:
-        await UniMessage.text(f"设置质量评分时发生错误：{str(e)}").send()
+        async with get_pixiv_spider() as spider:
+            if score is None:
+                current = int(spider.min_quality_score)
+                await UniMessage.text(
+                    f"当前质量评分阈值：{current}分\n用法：/p站 质量设置 [0-100]"
+                ).send()
+                return
+            saved = spider.set_min_quality_score(score)
+        await UniMessage.text(
+            f"✅ 质量评分阈值已设置为：{saved}分\n"
+            "💡 随机模式会优先选择不低于此分数的作品，找不到时才降级"
+        ).send()
+    except Exception:
+        logger.exception("[Pixiv] 设置质量评分失败")
+        await UniMessage.text("设置质量评分时发生错误，请查看后台日志").send()
 
 
 __all__ = [

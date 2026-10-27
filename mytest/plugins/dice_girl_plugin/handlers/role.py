@@ -8,6 +8,7 @@ from nonebot.permission import SUPERUSER
 from ..chat import memory_manager
 from ..persona import persona_manager
 from ..storage import set_group_role, set_private_role
+from ..storage.group_repository import clear_group_messages
 
 role_list_cmd = on_command(
     "dice 角色列表",
@@ -52,6 +53,8 @@ async def handle_role_set(bot: Bot, event: Event, args: Message = CommandArg()):
         group_id = str(event.group_id)
         set_group_role(group_id, role_key)
         memory_manager.clear_event_scope(event)
+        # 换了角色，旧角色说过的话不该算成新角色说的。
+        clear_group_messages(group_id)
         await role_set_cmd.finish(f"✨ 本群看板娘已切换为【{role_name}】！")
 
     elif isinstance(event, PrivateMessageEvent):

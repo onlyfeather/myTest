@@ -1,6 +1,8 @@
 from nonebot import on_command
 from nonebot.adapters import Bot, Event
+from nonebot.adapters.onebot.v11 import GroupMessageEvent
 
+from ..group.members import affinity_key
 from ..persona import persona_manager
 from ..storage import get_user_stats
 from .common import get_user_name
@@ -25,7 +27,8 @@ async def handle_status(bot: Bot, event: Event):
     current_persona = persona_manager.get_persona(event)
     role_name = current_persona.get("meta", {}).get("name", "未知")
 
-    data = get_user_stats(user_id, role_id=role_key)
+    group_id = str(event.group_id) if isinstance(event, GroupMessageEvent) else None
+    data = get_user_stats(affinity_key(user_id, group_id), role_id=role_key)
     fav = data["fav"]
     count = data["count"]
 
@@ -55,7 +58,7 @@ async def handle_status(bot: Bot, event: Event):
         f"----------------\n"
         f"昵称: {user_name}\n"
         f"ID: {user_id}\n"
-        f"当前看板娘: {role_name}\n"
+        f"角色: {role_name}\n"
         f"好感度: {fav} ({title})\n"
         f"互动次数: {count}\n"
         f"----------------\n"
@@ -80,10 +83,16 @@ async def handle_help():
         "   聊天会记录互动次数，并可能轻微改变当前角色对你的好感度。\n"
         "   好感度影响聊天中的称呼、距离感、亲密度和语气，不影响骰点结果。\n\n"
         "3. 状态与角色:\n"
-        "   /dice 状态                 查看当前角色、好感度和互动次数\n"
-        "   /dice 角色列表             查看可用角色\n"
-        "   /dice 切换角色 [key]       切换当前私聊或群聊的角色\n\n"
-        "4. 管理指令:\n"
+        "   /dice 状态                 查看好感度和互动次数\n\n"
+        "4. 群聊（在群里使用）:\n"
+        "   她会在被 @、被回复、被叫名字时说话；聊到群梗时可能接一句。\n"
+        "   /dice 群梗 添加 关键词1,关键词2 内容 | 列表 | 删除 编号\n"
+        "   /dice 昵称 [添加|删除 昵称] [@某人]  管理她对某人的称呼\n"
+        "   /dice 档案 [@某人]           看她对某人的了解\n"
+        "   /dice 忘记 [@某人]           让她忘掉对某人的印象\n"
+        "   /dice 群设置 [聊天|话题 开|关]  群管理员可用\n"
+        "   /dice 群记忆 [搜索|删除|整理|清空]  查看和管理她对本群的记忆\n\n"
+        "5. 管理指令:\n"
         "   管理指令仅 SUPERUSER 私聊可用。\n"
         "   /dice AI 状态\n"
         "   /dice AI 开启\n"
@@ -92,6 +101,7 @@ async def handle_help():
         "   /dice 记忆状态 [user_id(可选)] [角色ID(可选)]\n"
         "   /dice 摘要 [user_id(可选)] [角色ID(可选)]\n"
         "   /dice 清空记忆 [user_id(可选)] [角色ID(可选)]\n"
-        "   /dice 重建摘要 [user_id(可选)] [角色ID(可选)]"
+        "   /dice 重建摘要 [user_id(可选)] [角色ID(可选)]\n"
+        "   /dice 重载                 重新读取角色卡和世界书"
     )
     await help_matcher.finish(msg)

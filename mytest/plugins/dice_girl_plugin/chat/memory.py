@@ -3,13 +3,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
+from nonebot import logger
 from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, PrivateMessageEvent
 
 from ..storage import (
     append_chat_message,
-    clear_chat_summaries,
     clear_chat_messages,
+    clear_chat_messages_by_scope_prefix,
+    clear_chat_summaries,
     count_chat_messages,
     get_chat_summary,
     load_chat_messages,
@@ -72,6 +74,9 @@ class MemoryStore:
     ) -> int:
         return clear_chat_summaries(scope=scope, role_id=role_id, user_id=user_id)
 
+    def clear_messages_by_scope_prefix(self, scope_prefix: str) -> int:
+        return clear_chat_messages_by_scope_prefix(scope_prefix)
+
     def count_messages(
         self,
         scope: str | None = None,
@@ -116,6 +121,9 @@ class NullMemoryStore:
     ) -> int:
         return 0
 
+    def clear_messages_by_scope_prefix(self, scope_prefix: str) -> int:
+        return 0
+
     def count_messages(
         self,
         scope: str | None = None,
@@ -135,6 +143,7 @@ class MemoryManager:
     def __init__(self, limit: int = 10, store=None, summary_limit: int = 600):
         self._cache = defaultdict(list)
         self._loaded_keys = set()
+        self._background_tasks: set[asyncio.Task] = set()
         self.limit = limit
         self.summary_limit = summary_limit
         self.store = store or MemoryStore()
@@ -243,53 +252,23 @@ class MemoryManager:
         self.store.clear_summaries(user_id=user_id)
         return max(removed_cache, removed_store)
 
-    def clear_scope(self, scope: str, role_id: str | None = None) -> int:
-        prefix = f"{scope}|"
-        keys = [
-            key
-            for key in self._cache
-            if key.startswith(prefix)
-            and (role_id is None or key.split("|", 2)[1] == role_id)
-        ]
-        removed_cache = self._drop_keys(keys)
-        removed_store = self.store.clear_messages(scope=scope, role_id=role_id)
-        self.store.clear_summaries(scope=scope, role_id=role_id)
-        return max(removed_cache, removed_store)
-
-    def clear_event_scope(self, event: Event, role_id: str | None = None) -> int:
+    def clear_event_scope(self, event: Event) -> int:
+        """切换角色时清空当前会话（整个群或这个私聊）所有角色的短期记忆，保留长期摘要。"""
         if isinstance(event, GroupMessageEvent):
-            prefix = f"group:{event.group_id}:user:"
-            keys = [
-                key
-                for key in self._cache
-                if key.startswith(prefix)
-                and (role_id is None or key.split("|", 2)[1] == role_id)
-            ]
-            removed_cache = self._drop_keys(keys)
-            removed_store = 0
-            for cache_key in keys:
-                scope, key_role_id, user_id = cache_key.split("|", 2)
-                removed_store += self.store.clear_messages(
-                    scope=scope,
-                    role_id=key_role_id,
-                    user_id=user_id,
-                )
-                self.store.clear_summaries(
-                    scope=scope,
-                    role_id=key_role_id,
-                    user_id=user_id,
-                )
-            return max(removed_cache, removed_store)
+            scope_prefix = f"group:{event.group_id}:user:"
+        else:
+            scope_prefix = build_memory_scope(event, event.get_user_id())
 
-        user_id = event.get_user_id()
-        return self.clear(user_id, role_id=role_id, event=event)
+        def in_scope(cache_key: str) -> bool:
+            scope = cache_key.split("|", 1)[0]
+            if scope_prefix.endswith(":"):
+                return scope.startswith(scope_prefix)
+            return scope == scope_prefix
 
-    def stats(self) -> dict:
-        return {
-            "scopes": len(self._cache),
-            "messages": sum(len(messages) for messages in self._cache.values()),
-            "limit": self.limit,
-        }
+        keys = [key for key in self._cache if in_scope(key)]
+        removed_cache = self._drop_keys(keys)
+        removed_store = self.store.clear_messages_by_scope_prefix(scope_prefix)
+        return max(removed_cache, removed_store)
 
     def scope_stats(
         self,
@@ -345,17 +324,31 @@ class MemoryManager:
         except RuntimeError:
             return
 
-        loop.create_task(self._merge_summary_with_llm(key, old_summary, messages))
+        task = loop.create_task(
+            self._merge_summary_with_llm(key, old_summary, messages, fallback_summary)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _merge_summary_with_llm(
         self,
         key: MemoryKey,
         old_summary: str,
         messages: list[dict],
+        expected_current: str,
     ) -> None:
-        summary = await summarize_memory(old_summary, messages)
-        if summary:
-            self.store.set_summary(key, _compact_text(summary, self.summary_limit))
+        try:
+            summary = await summarize_memory(old_summary, messages)
+        except Exception:
+            logger.exception("[Memory] LLM 摘要任务异常")
+            return
+        if not summary:
+            return
+        # 等待 LLM 期间如果又有新的溢出写入了摘要，丢弃这次结果，避免旧摘要覆盖新内容。
+        if self.store.get_summary(key) != expected_current:
+            logger.debug("[Memory] 摘要已被更新，丢弃过期的 LLM 摘要结果")
+            return
+        self.store.set_summary(key, _compact_text(summary, self.summary_limit))
 
     def _build_rule_summary(self, old_summary: str, messages: list[dict]) -> str:
         new_items = []

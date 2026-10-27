@@ -5,13 +5,42 @@ from typing import Any, List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from nonebot import logger
+from nonebot import get_driver, logger
 from nonebot_plugin_alconna.uniseg import Image, UniMessage
 
 from ..common import MAX_IMAGES_PER_MESSAGE
-from ..config import get_data_path
 
 bot_logger = logger
+
+_DOWNLOAD_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.pixiv.net/",
+}
+_download_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_download_client() -> httpx.AsyncClient:
+    global _download_client
+    if _download_client is None or _download_client.is_closed:
+        _download_client = httpx.AsyncClient(
+            headers=_DOWNLOAD_HEADERS,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            follow_redirects=True,
+            trust_env=True,
+        )
+    return _download_client
+
+
+@get_driver().on_shutdown
+async def _close_download_client() -> None:
+    global _download_client
+    if _download_client is not None:
+        await _download_client.aclose()
+        _download_client = None
 
 
 _URL_PRIORITY = (
@@ -89,44 +118,28 @@ def _image_name_from_url(url: str, content_type: str = "") -> str:
     return f"pixiv_{digest}{suffix}"
 
 
-async def _download_image_for_send(url: str, retries: int = 5) -> Optional[Image]:
-    cache_dir = get_data_path("image_cache").parent / "image_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://www.pixiv.net/",
-    }
-
+async def _download_image_for_send(url: str, retries: int = 3) -> Optional[Image]:
+    client = _get_download_client()
     for attempt in range(1, retries + 1):
         try:
-            async with httpx.AsyncClient(
-                timeout=45.0,
-                follow_redirects=True,
-                trust_env=True,
-            ) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                content_type = response.headers.get("content-type", "")
-                if content_type and not content_type.lower().startswith("image/"):
-                    bot_logger.warning(
-                        f"图片下载返回非图片内容: url={url}, content-type={content_type}"
-                    )
-                    return None
+            response = await client.get(url)
+            if response.status_code == 404:
+                bot_logger.warning(f"图片不存在(404)，不再重试: url={url}")
+                return None
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            if content_type and not content_type.lower().startswith("image/"):
+                bot_logger.warning(
+                    f"图片下载返回非图片内容: url={url}, content-type={content_type}"
+                )
+                return None
 
-                raw = response.content
-                if not raw:
-                    bot_logger.warning(f"图片下载内容为空: url={url}")
-                    return None
+            raw = response.content
+            if not raw:
+                bot_logger.warning(f"图片下载内容为空: url={url}")
+                return None
 
-                name = _image_name_from_url(url, content_type)
-                cache_path = cache_dir / name
-                cache_path.write_bytes(raw)
-                return Image(raw=raw, name=name)
+            return Image(raw=raw, name=_image_name_from_url(url, content_type))
         except Exception as e:
             bot_logger.warning(
                 f"图片下载失败({attempt}/{retries}): "
@@ -223,8 +236,10 @@ async def send_images_with_info(images: List[dict], title: str):
                 added_images = 0
                 skipped_images = 0
 
-                for url in urls:
-                    image_segment = await _build_send_image_segment(url)
+                segments = await asyncio.gather(
+                    *(_build_send_image_segment(url) for url in urls)
+                )
+                for image_segment in segments:
                     if image_segment is None:
                         skipped_images += 1
                         continue
@@ -250,30 +265,17 @@ async def send_images_with_info(images: List[dict], title: str):
                 bot_logger.error(f"第 {index} 张图片降级发送也失败: {fallback_e}")
 
 
-async def send_single_image_with_info(
-    image: dict,
-    title: str,
-    quality_score: Optional[dict] = None,
-):
-    if not isinstance(image, dict):
-        return
-
-    message_text = _build_image_text(image, title)
-    urls = extract_image_urls(image)
-
-    try:
-        if urls:
-            message = UniMessage.text(message_text + "\n")
-            for url in urls[:MAX_IMAGES_PER_MESSAGE]:
-                image_segment = await _build_send_image_segment(url)
-                if image_segment is not None:
-                    message = message + image_segment
-            await message.send()
-        else:
-            await UniMessage.text(message_text + "\n图片获取失败").send()
-    except Exception as e:
-        logger.error(f"发送图片失败: {e}")
-        try:
-            await UniMessage.text(message_text + "\n图片发送失败，请稍后重试").send()
-        except Exception as fallback_e:
-            logger.error(f"降级发送也失败: {fallback_e}")
+async def send_text_with_images(text: str, urls: List[str]) -> bool:
+    """下载图片后与文字一起发送；返回是否至少发出一张图。"""
+    urls = [url for url in urls if url][:MAX_IMAGES_PER_MESSAGE]
+    segments = await asyncio.gather(*(_build_send_image_segment(url) for url in urls))
+    message = UniMessage.text(text)
+    added = 0
+    for segment in segments:
+        if segment is not None:
+            message = message + segment
+            added += 1
+    if urls and added == 0:
+        message = message + UniMessage.text("\n图片下载失败，请稍后重试。")
+    await message.send()
+    return added > 0

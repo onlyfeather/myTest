@@ -1,35 +1,55 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 
 from ..config import get_data_path
 
 DB_PATH = get_data_path("dice_data.db")
+DEFAULT_FAVORABILITY = 50
+
+_init_lock = threading.Lock()
+_initialized = False
+
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA busy_timeout = 10000")
+    return conn
 
 
 @contextmanager
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    _ensure_initialized()
+    conn = _connect()
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def init_db():
-    with get_connection() as conn:
-        cursor = conn.cursor()
+def _ensure_initialized() -> None:
+    global _initialized
+    if _initialized:
+        return
+    with _init_lock:
+        if not _initialized:
+            init_db()
+            _initialized = True
+            from .group_repository import init_group_tables
 
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
-                favorability INTEGER DEFAULT 50,
-                interaction_count INTEGER DEFAULT 0
-            )
-        """
-        )
+            init_group_tables()
+
+
+def init_db():
+    conn = _connect()
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+        cursor = conn.cursor()
 
         cursor.execute(
             """
@@ -91,9 +111,9 @@ def init_db():
             )
         """
         )
-
-
-init_db()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_group_role(group_id: str) -> str:
@@ -142,7 +162,7 @@ def set_private_role(user_id: str, role_key: str):
         )
 
 
-def get_user_favorability(user_id: str, role_id: str = "ling") -> int:
+def get_user_favorability(user_id: str, role_id: str = "default") -> int:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -157,34 +177,29 @@ def get_user_favorability(user_id: str, role_id: str = "ling") -> int:
     return 50
 
 
-def update_user_favorability(user_id: str, delta: int, role_id: str = "ling"):
+def update_user_favorability(user_id: str, delta: int, role_id: str = "default"):
+    initial = max(0, min(100, DEFAULT_FAVORABILITY + delta))
     with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT favorability FROM user_role_affinity "
-            "WHERE user_id = ? AND role_id = ?",
-            (user_id, role_id),
-        )
-        row = cursor.fetchone()
-        current = row[0] if row else 50
-        new_fav = max(0, min(100, current + delta))
-
-        cursor.execute(
+        conn.execute(
             """
             INSERT INTO user_role_affinity (
                 user_id, role_id, favorability, interaction_count
             )
             VALUES (?, ?, ?, 1)
             ON CONFLICT(user_id, role_id) DO UPDATE SET
-                favorability = ?,
+                favorability = MAX(0, MIN(100, favorability + ?)),
                 interaction_count = interaction_count + 1
         """,
-            (user_id, role_id, new_fav, new_fav),
+            (user_id, role_id, initial, delta),
         )
-    return new_fav
+        row = conn.execute(
+            "SELECT favorability FROM user_role_affinity WHERE user_id = ? AND role_id = ?",
+            (user_id, role_id),
+        ).fetchone()
+    return row[0]
 
 
-def get_user_stats(user_id: str, role_id: str = "ling"):
+def get_user_stats(user_id: str, role_id: str = "default"):
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -196,7 +211,7 @@ def get_user_stats(user_id: str, role_id: str = "ling"):
     return {"fav": row[0], "count": row[1]} if row else {"fav": 50, "count": 0}
 
 
-def set_user_favorability(user_id: str, value: int, role_id: str = "ling"):
+def set_user_favorability(user_id: str, value: int, role_id: str = "default"):
     val = max(0, min(100, value))
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -298,6 +313,25 @@ def clear_chat_messages(
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(f"DELETE FROM chat_messages{where}", tuple(values))
+        return cursor.rowcount
+
+
+def clear_chat_messages_by_scope_prefix(scope_prefix: str) -> int:
+    """删除 scope 等于 scope_prefix，或以 scope_prefix 开头且其以 ':' 结尾的消息。"""
+    with get_connection() as conn:
+        if scope_prefix.endswith(":"):
+            escaped = (
+                scope_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            cursor = conn.execute(
+                "DELETE FROM chat_messages WHERE scope LIKE ? ESCAPE '\\'",
+                (escaped + "%",),
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM chat_messages WHERE scope = ?",
+                (scope_prefix,),
+            )
         return cursor.rowcount
 
 

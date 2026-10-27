@@ -1,3 +1,4 @@
+from ...persona.schema import PRIVATE
 from .character import render_character_block
 from .common import build_character_context
 
@@ -7,8 +8,9 @@ def build_dice_prompt(
     current_fav: int,
     user_name: str,
     user_text: str = "",
+    scene: str = PRIVATE,
 ) -> str:
-    ctx = build_character_context(role_data, current_fav, user_text)
+    ctx = build_character_context(role_data, current_fav, user_text, scene=scene)
     dice_reactions = role_data.get("dice_reactions", {})
 
     prompt = f"""

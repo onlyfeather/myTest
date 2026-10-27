@@ -8,6 +8,7 @@ from ..common import (
     LATEST_MIN_BOOKMARKS,
     extract_plain_text,
     pixiv_command,
+    report_error,
 )
 from ..parser import (
     parse_beautiful_text,
@@ -67,7 +68,7 @@ async def search_images_handle(event: Event, regex_str: str = RegexStr()):
             await send_images_with_info(result.images or [], result.title)
 
     except Exception as e:
-        await UniMessage.text(f"搜索图片时发生错误：{str(e)}").send()
+        await report_error("搜索图片时发生错误", e)
 
 
 @latest_matcher.handle()
@@ -93,7 +94,7 @@ async def latest_images_handle(event: Event, regex_str: str = RegexStr()):
             await send_images_with_info(result.images or [], result.title)
 
     except Exception as e:
-        await UniMessage.text(f"获取最新图片时发生错误：{str(e)}").send()
+        await report_error("获取最新图片时发生错误", e)
 
 
 @popular_matcher.handle()
@@ -115,7 +116,7 @@ async def popular_images_handle(event: Event, regex_str: str = RegexStr()):
             await send_images_with_info(result.images or [], result.title)
 
     except Exception as e:
-        await UniMessage.text(f"获取美图时发生错误：{str(e)}").send()
+        await report_error("获取美图时发生错误", e)
 
 
 @hot_matcher.handle()
@@ -139,7 +140,7 @@ async def hot_images_handle(event: Event, regex_str: str = RegexStr()):
             await send_images_with_info(result.images or [], result.title)
 
     except Exception as e:
-        await UniMessage.text(f"获取热门图片时发生错误：{str(e)}").send()
+        await report_error("获取热门图片时发生错误", e)
 
 
 async def _handle_daily_recommend(event: Event):
@@ -154,7 +155,7 @@ async def _handle_daily_recommend(event: Event):
             await send_images_with_info(result.images or [], result.title)
 
     except Exception as e:
-        await UniMessage.text(f"获取今日推荐时发生错误：{str(e)}").send()
+        await report_error("获取今日推荐时发生错误", e)
 
 
 @daily_matcher.handle()

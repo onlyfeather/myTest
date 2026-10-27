@@ -249,7 +249,7 @@ async def _select_search_images(
             spider,
             get_search_candidates(search_result),
             count,
-            min_quality_score=60.0,
+            min_quality_score=spider.min_quality_score,
             max_attempts=max_attempts,
             min_bookmarks=min_bookmarks,
             allow_fallback=min_bookmarks <= 0,
@@ -287,13 +287,13 @@ async def _get_latest_images(
 
     time_threshold = datetime.now(timezone.utc) - timedelta(hours=hours_limit)
     time_threshold_str = time_threshold.strftime("%Y-%m-%dT%H:%M:%S UTC")
-    search_result = await spider._search_illustrations_simple(tags, page=1)
+    search_result = await spider.search_latest_illustrations(tags, page=1)
     if not search_result:
         return None
 
     found_images = []
     for image in search_result.get("illusts", []):
-        create_time = spider._parse_pixiv_time(image.get("createDate", ""))
+        create_time = spider.parse_pixiv_time(image.get("createDate", ""))
         if not create_time:
             continue
         if create_time < time_threshold:
@@ -359,7 +359,7 @@ async def _get_daily_recommend(
     if not available_tags:
         return None
 
-    seed = spider._get_daily_seed(user_id or "anonymous")
+    seed = spider.get_daily_seed(user_id or "anonymous")
     start_index = seed % len(available_tags)
     ordered_tags = available_tags[start_index:] + available_tags[:start_index]
     attempted_tags = []

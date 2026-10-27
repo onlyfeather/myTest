@@ -2,8 +2,10 @@ import json
 
 from nonebot import logger
 from nonebot.adapters import Event
+from nonebot.adapters.onebot.v11 import GroupMessageEvent
 
 from ..persona import persona_manager
+from ..persona.schema import GROUP, PRIVATE
 from .client import (
     chat_url,
     get_ai_client,
@@ -34,6 +36,7 @@ async def get_dice_reaction(
         user_fav,
         user_name,
         data["event"],
+        scene=GROUP if isinstance(event, GroupMessageEvent) else PRIVATE,
     )
 
     user_prompt = build_dice_user_prompt(user_fav, data)

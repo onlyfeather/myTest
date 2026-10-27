@@ -1,42 +1,42 @@
 import asyncio
-import json
-import httpx
-import random
-import time
 import hashlib
-from datetime import datetime
-from typing import Optional, Dict, Any, List, Set, Union
-from nonebot import get_driver, logger
+import re
+import time
+from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Union
+
+import httpx
+from nonebot import logger
+
+from .config import config
 from .pixiv_storage import PixivStorage
 
+# 每日一图按北京时间换日，避免云服务器使用 UTC 时在早上 8 点才换图。
+DAILY_TIMEZONE = timezone(timedelta(hours=8))
+DEFAULT_MIN_QUALITY_SCORE = 60
 
-@get_driver().on_shutdown
-async def _shutdown_pixiv_session():
-    if PixivSpider._shared_session:
-        await PixivSpider._shared_session.aclose()
-        PixivSpider._shared_session = None
+# 失败原因按请求（asyncio 任务）隔离，避免并发请求互相覆盖。
+_last_error_reason: ContextVar[Optional[str]] = ContextVar(
+    "pixiv_last_error_reason", default=None
+)
 
 
 class PixivSpider:
-    """Pixiv爬虫类，支持Cookie登录"""
+    """Pixiv 客户端。进程内只应存在一个实例，由 pixiv.client 管理。"""
 
-    _shared_session: Optional[httpx.AsyncClient] = None
-    _shared_loaded = False
-    _shared_state: Dict[str, Any] = {}
-    _file_lock = asyncio.Lock()
-    _rate_limit_lock = asyncio.Lock()
-    _last_request_time = 0.0
-    _detail_semaphore = asyncio.Semaphore(3)
-    _original_url_cache: Dict[str, List[str]] = {}
-    
     def __init__(self, storage: Optional[PixivStorage] = None):
-        self.session = None
+        self.session: Optional[httpx.AsyncClient] = None
         self.base_url = "https://www.pixiv.net"
         self.storage = storage or PixivStorage()
         self.full_cookie = None
         self.user_id = None
         self.is_logged_in = False
-        self.last_error_reason = None
+        self.min_quality_score: float = DEFAULT_MIN_QUALITY_SCORE
+        self._rate_limit_lock = asyncio.Lock()
+        self._last_request_time = 0.0
+        self._detail_semaphore = asyncio.Semaphore(3)
+        self._original_url_cache: Dict[str, List[str]] = {}
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/plain, */*',
@@ -46,14 +46,8 @@ class PixivSpider:
             'Referer': 'https://www.pixiv.net/'
         }
         
-        # 限流配置
-        self.last_request_time = 0
-        self.min_request_interval = 0.5  # 最小请求间隔（秒）- 降低到0.5秒提高性能
-        self.rate_limit_enabled = True  # 是否启用限流
-        
-        # 翻译缓存
-        self.translation_cache: Dict[str, Dict[str, str]] = {}  # 缓存翻译结果
-        self.cache_max_size = 1000  # 最大缓存数量
+        # 最小请求间隔（秒）
+        self.min_request_interval = 0.5
         
         # Tag池配置
         self.preferred_tags: Set[str] = set()
@@ -78,32 +72,44 @@ class PixivSpider:
             "猎奇", "恶心", "重口", "黑暗", "抑郁"
         }
 
-    def _publish_state(self):
-        PixivSpider._shared_state = {
-            "full_cookie": self.full_cookie,
-            "user_id": self.user_id,
-            "is_logged_in": self.is_logged_in,
-            "last_error_reason": self.last_error_reason,
-            "preferred_tags": self.preferred_tags,
-            "blocked_tags": self.blocked_tags,
-            "favorite_authors": self.favorite_authors,
-            "alias_to_user_id": self.alias_to_user_id,
-            "normalized_alias_to_user_id": self.normalized_alias_to_user_id,
-            "translation_cache": self.translation_cache,
-        }
+    @property
+    def last_error_reason(self) -> Optional[str]:
+        return _last_error_reason.get()
 
-    def _use_shared_state(self):
-        state = PixivSpider._shared_state
-        self.full_cookie = state.get("full_cookie")
-        self.user_id = state.get("user_id")
-        self.is_logged_in = state.get("is_logged_in", False)
-        self.last_error_reason = state.get("last_error_reason")
-        self.preferred_tags = state.get("preferred_tags", set())
-        self.blocked_tags = state.get("blocked_tags", set())
-        self.favorite_authors = state.get("favorite_authors", {})
-        self.alias_to_user_id = state.get("alias_to_user_id", {})
-        self.normalized_alias_to_user_id = state.get("normalized_alias_to_user_id", {})
-        self.translation_cache = state.get("translation_cache", {})
+    @last_error_reason.setter
+    def last_error_reason(self, value: Optional[str]) -> None:
+        _last_error_reason.set(value)
+
+    async def start(self) -> None:
+        """加载持久化状态并创建 HTTP 会话，只在首次使用时调用一次。"""
+        self.load_cookie()
+        self.load_tag_pools()
+        self.load_favorite_authors()
+        self.load_settings()
+        self.session = httpx.AsyncClient(
+            headers=self.headers,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            follow_redirects=True,
+        )
+
+    async def close(self) -> None:
+        if self.session:
+            await self.session.aclose()
+            self.session = None
+
+    def load_settings(self) -> None:
+        raw = self.storage.get_setting("min_quality_score")
+        try:
+            self.min_quality_score = float(raw) if raw is not None else DEFAULT_MIN_QUALITY_SCORE
+        except ValueError:
+            logger.warning(f"Pixiv 质量阈值配置无效: {raw!r}，使用默认值")
+            self.min_quality_score = DEFAULT_MIN_QUALITY_SCORE
+
+    def set_min_quality_score(self, score: int) -> int:
+        score = min(max(int(score), 0), 100)
+        self.storage.set_setting("min_quality_score", str(score))
+        self.min_quality_score = score
+        return score
 
     @staticmethod
     def _normalize_alias(alias: str) -> str:
@@ -137,7 +143,6 @@ class PixivSpider:
             self.full_cookie = cookie_string
             self.user_id = final_user_id
             self.is_logged_in = True
-            self._publish_state()
             logger.info("Pixiv Cookie 已保存到 SQLite")
             return True
             
@@ -195,7 +200,6 @@ class PixivSpider:
             reason = "unknown_error"
 
         self.last_error_reason = reason
-        self._publish_state()
         return reason
     
     def set_cookie(self, cookie_string: str) -> bool:
@@ -250,7 +254,6 @@ class PixivSpider:
         try:
             self.storage.replace_tags("preferred", self.preferred_tags)
             self.storage.replace_tags("blocked", self.blocked_tags)
-            self._publish_state()
             logger.info("Pixiv tag池已保存到 SQLite")
             return True
         except Exception as e:
@@ -315,17 +318,6 @@ class PixivSpider:
             logger.exception(f"移除屏蔽tag失败: {e}")
             return False
     
-    def get_random_preferred_tag(self) -> Optional[str]:
-        """从喜好tag池中随机选择一个tag"""
-        try:
-            if not self.preferred_tags:
-                logger.debug("喜好tag池为空")
-                return None
-            return random.choice(list(self.preferred_tags))
-        except Exception as e:
-            logger.debug(f"随机选择喜好tag失败: {e}")
-            return None
-    
     def get_tag_pools_info(self) -> Dict[str, Any]:
         """获取tag池信息"""
         return {
@@ -334,93 +326,6 @@ class PixivSpider:
             'preferred_count': len(self.preferred_tags),
             'blocked_count': len(self.blocked_tags)
         }
-
-    async def get_tag_translation(self, tag: str) -> Dict[str, str]:
-        """
-        获取tag的翻译信息（带缓存优化）
-        
-        Args:
-            tag: 标签名称
-            
-        Returns:
-            翻译字典，失败返回空字典
-        """
-        try:
-            if not tag or not tag.strip():
-                return {}
-            
-            clean_tag = tag.strip()
-            
-            # 检查缓存
-            if clean_tag in self.translation_cache:
-                logger.debug(f"使用翻译缓存: {clean_tag}")
-                return self.translation_cache[clean_tag]
-            
-            # 限流等待
-            await self._rate_limit_wait()
-            
-            url = f"{self.base_url}/ajax/search/tags/{clean_tag}?lang=zh"
-            
-            # 设置认证头（如果有的话）
-            headers = self.headers.copy()
-            if self.full_cookie:
-                headers['Cookie'] = self.full_cookie
-            
-            if not self.session:
-                raise RuntimeError("Session not initialized")
-            
-            logger.debug(f"请求翻译API: {clean_tag}")
-            response = await self.session.get(url, headers=headers)
-            response.raise_for_status()
-            
-            tag_data = response.json()
-            
-            if tag_data.get('error'):
-                return {}
-            
-            body = tag_data.get('body', {})
-            tag_translation = body.get('tagTranslation', {})
-            
-            # 处理不同的返回格式
-            translations = {}
-            if isinstance(tag_translation, dict):
-                # 标准格式：{tag: {translations}}
-                translations = tag_translation.get(clean_tag, {})
-            elif isinstance(tag_translation, list):
-                # 列表格式：[{tag: translations}, ...]
-                for item in tag_translation:
-                    if isinstance(item, dict) and clean_tag in item:
-                        translations = item[clean_tag]
-                        break
-            
-            # 确保translations是字典格式
-            if not isinstance(translations, dict):
-                translations = {}
-            
-            # 构建翻译结果
-            translation_result = {
-                'en': translations.get('en', ''),
-                'zh': translations.get('zh', ''),
-                'ko': translations.get('ko', ''),
-                'zh_tw': translations.get('zh_tw', ''),
-                'romaji': translations.get('romaji', '')
-            }
-            
-            # 缓存结果（限制缓存大小）
-            if len(self.translation_cache) >= self.cache_max_size:
-                # 清理最旧的缓存项（简单的FIFO策略）
-                oldest_key = next(iter(self.translation_cache))
-                del self.translation_cache[oldest_key]
-                logger.debug(f"清理翻译缓存: {oldest_key}")
-            
-            self.translation_cache[clean_tag] = translation_result
-            logger.debug(f"缓存翻译结果: {clean_tag}")
-            
-            return translation_result
-            
-        except Exception as e:
-            logger.debug(f"获取tag翻译异常: {e}")
-            return {}
 
     async def _should_block_image_with_translation(self, illust_tags: List[str], related_tags: Optional[List[str]] = None, tag_translation: Optional[Dict[str, Dict[str, str]]] = None) -> bool:
         """
@@ -524,7 +429,6 @@ class PixivSpider:
                         
                         # 词汇边界匹配（避免子字符串误判）
                         if len(blocked_tag) >= 2:  # 至少2个字符才考虑模糊匹配
-                            import re
                             # 使用更精确的边界匹配
                             pattern = r'(?<![a-zA-Z0-9\-_])' + re.escape(blocked_tag) + r'(?![a-zA-Z0-9\-_])'
                             if re.search(pattern, translated_lower, re.IGNORECASE):
@@ -538,41 +442,6 @@ class PixivSpider:
             logger.debug(f"检查图片屏蔽异常: {e}")
             return False  # 出错时不屏蔽，避免误删
 
-    def _should_block_image(self, illust_tags: List[str]) -> bool:
-        """
-        检查图片是否应该被屏蔽（基于tag，不包含翻译检查）
-        
-        Args:
-            illust_tags: 图片的tag列表
-            
-        Returns:
-            True表示应该屏蔽，False表示不屏蔽
-        """
-        try:
-            if not illust_tags or not self.blocked_tags:
-                return False
-            
-            # 将图片tag转换为小写集合，便于比较
-            illust_tags_lower = {tag.lower().strip() for tag in illust_tags if tag and tag.strip()}
-            blocked_tags_lower = {tag.lower().strip() for tag in self.blocked_tags if tag and tag.strip()}
-            
-            # 检查是否有任何屏蔽tag匹配
-            for blocked_tag in blocked_tags_lower:
-                # 精确匹配
-                if blocked_tag in illust_tags_lower:
-                    return True
-                
-                # 模糊匹配（检查是否包含屏蔽tag作为子字符串）
-                for illust_tag in illust_tags_lower:
-                    if blocked_tag in illust_tag or illust_tag in blocked_tag:
-                        return True
-            
-            return False
-            
-        except Exception as e:
-            logger.debug(f"检查图片屏蔽异常: {e}")
-            return False  # 出错时不屏蔽，避免误删
-    
     def load_favorite_authors(self) -> bool:
         """加载喜欢作者配置"""
         try:
@@ -589,7 +458,6 @@ class PixivSpider:
         """保存喜欢作者配置"""
         try:
             self.storage.replace_favorite_authors(self.favorite_authors)
-            self._publish_state()
             logger.info("喜欢作者已保存到 SQLite")
             return True
         except Exception as e:
@@ -659,10 +527,6 @@ class PixivSpider:
             logger.exception(f"移除喜欢作者失败: {e}")
             return False
     
-    def get_favorite_authors(self) -> Dict[str, Dict[str, Any]]:
-        """获取所有喜欢作者"""
-        return self.favorite_authors.copy()
-    
     def get_favorite_author_info(self, user_id: str) -> Optional[Dict[str, Any]]:
         """获取特定喜欢作者信息"""
         return self.favorite_authors.get(str(user_id))
@@ -675,7 +539,6 @@ class PixivSpider:
                 checked_at = datetime.now().isoformat()
                 self.favorite_authors[user_id]['last_check'] = checked_at
                 self.storage.update_author_last_check(user_id, checked_at)
-                self._publish_state()
                 return True
             return False
         except Exception as e:
@@ -824,19 +687,6 @@ class PixivSpider:
             logger.debug(f"通过圈名搜索作者失败: {e}")
             return None
 
-    def get_author_aliases(self, user_id: str) -> List[str]:
-        """获取作者的所有圈名"""
-        try:
-            user_id = str(user_id).strip()
-            if not user_id:
-                return []
-            
-            author_info = self.favorite_authors.get(user_id, {})
-            return author_info.get('aliases', []).copy()
-        except Exception as e:
-            logger.debug(f"获取作者圈名失败: {e}")
-            return []
-
     def get_all_aliases(self) -> Dict[str, str]:
         """获取所有圈名映射"""
         return self.alias_to_user_id.copy()
@@ -874,34 +724,6 @@ class PixivSpider:
             'authors': self.favorite_authors,
             'alias_mapping': self.alias_to_user_id.copy()
         }
-    
-    async def __aenter__(self):
-        """异步上下文管理器入口"""
-        if not PixivSpider._shared_loaded:
-            async with PixivSpider._file_lock:
-                if not PixivSpider._shared_loaded:
-                    self.load_cookie()
-                    self.load_tag_pools()
-                    self.load_favorite_authors()
-                    self._update_alias_mapping()
-                    self._publish_state()
-                    PixivSpider._shared_loaded = True
-        else:
-            self._use_shared_state()
-
-        if not PixivSpider._shared_session:
-            PixivSpider._shared_session = httpx.AsyncClient(
-                headers=self.headers,
-                timeout=30.0,
-                follow_redirects=True
-            )
-        self.session = PixivSpider._shared_session
-        return self
-        
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """异步上下文管理器出口"""
-        self._publish_state()
-        self.session = None
     
     async def get_user_info(self, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -988,7 +810,7 @@ class PixivSpider:
                 logger.debug(f"获取作者作品失败: {author_data.get('message', '未知错误')}")
                 return None
             
-            logger.debug(f"成功获取作者作品数据")
+            logger.debug("成功获取作者作品数据")
             return author_data.get('body')
             
         except Exception as e:
@@ -997,19 +819,16 @@ class PixivSpider:
     
     async def _rate_limit_wait(self):
         """限流等待"""
-        if not self.rate_limit_enabled:
-            return
-
-        async with PixivSpider._rate_limit_lock:
+        async with self._rate_limit_lock:
             current_time = time.time()
-            time_since_last_request = current_time - PixivSpider._last_request_time
+            time_since_last_request = current_time - self._last_request_time
 
             if time_since_last_request < self.min_request_interval:
                 wait_time = self.min_request_interval - time_since_last_request
                 logger.debug(f"[Pixiv] Rate limit wait: {wait_time:.2f}s")
                 await asyncio.sleep(wait_time)
 
-            PixivSpider._last_request_time = time.time()
+            self._last_request_time = time.time()
 
     async def search_illustrations(self, tag: Union[str, List[str]], page: int = 1, page_size: int = 30) -> Optional[Dict[str, Any]]:
         """
@@ -1031,7 +850,6 @@ class PixivSpider:
             if not self.full_cookie:
                 logger.debug("没有可用的Cookie，无法搜索图片")
                 self.last_error_reason = "missing_cookie"
-                self._publish_state()
                 return None
             
             # 处理搜索标签
@@ -1047,7 +865,6 @@ class PixivSpider:
                     return None
                 
                 # 拆解标签：支持逗号、空格、中文逗号分隔
-                import re
                 # 使用正则表达式拆分标签，支持多种分隔符
                 tags_list = re.split(r'[,，\s]+', tag_str)
                 tags_list = [t.strip() for t in tags_list if t and t.strip()]
@@ -1129,7 +946,7 @@ class PixivSpider:
                     },
                     'searchInfo': {
                         'keyword': search_keyword,
-                        'timestamp': __import__('datetime').datetime.now().isoformat()
+                        'timestamp': datetime.now().isoformat()
                     }
                 }
             
@@ -1197,7 +1014,7 @@ class PixivSpider:
                 # 搜索元信息
                 'searchInfo': {
                     'keyword': search_keyword,
-                    'timestamp': __import__('datetime').datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat()
                 }
             }
             
@@ -1218,11 +1035,11 @@ class PixivSpider:
                 },
                 'searchInfo': {
                     'keyword': search_keyword,
-                    'timestamp': __import__('datetime').datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat()
                 }
             }
 
-    def _get_daily_seed(self, user_qq: str) -> int:
+    def get_daily_seed(self, user_qq: str) -> int:
         """
         生成用户每日固定种子
         
@@ -1232,7 +1049,7 @@ class PixivSpider:
         Returns:
             确定性的种子数字
         """
-        today = datetime.now().strftime("%Y%m%d")  # 如: 20241121
+        today = datetime.now(DAILY_TIMEZONE).strftime("%Y%m%d")
         seed_string = f"{user_qq}_{today}"
         
         # 使用MD5哈希确保确定性
@@ -1241,40 +1058,6 @@ class PixivSpider:
         
         # 取前8位十六进制转为整数
         return int(hash_hex[:8], 16)
-
-    def _select_tag_by_seed(self, preferred_tags: List[str], seed: int) -> Optional[str]:
-        """
-        根据种子选择tag
-        
-        Args:
-            preferred_tags: 喜好tag列表
-            seed: 种子数字
-            
-        Returns:
-            选中的tag，失败返回None
-        """
-        if not preferred_tags:
-            return None
-        
-        tag_index = seed % len(preferred_tags)
-        return preferred_tags[tag_index]
-
-    def _select_image_by_seed(self, popular_images: List[Dict], seed: int) -> Optional[Dict]:
-        """
-        根据种子选择图片
-        
-        Args:
-            popular_images: 热门图片列表
-            seed: 种子数字
-            
-        Returns:
-            选中的图片信息
-        """
-        if not popular_images:
-            return None
-        
-        image_index = seed % len(popular_images)
-        return popular_images[image_index]
 
     def calculate_quality_score(self, illust_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1363,25 +1146,11 @@ class PixivSpider:
     def _calculate_hours_since_upload(self, create_date_str: str) -> float:
         """计算作品发布至今的小时数"""
         try:
-            if not create_date_str:
+            create_time = self.parse_pixiv_time(create_date_str)
+            if not create_time:
                 return 24 * 30  # 默认30天
-            
-            # 解析时间字符串 (格式: "2025-11-21T06:12:32+09:00")
-            from datetime import datetime
-            import re
-            
-            # 提取主要时间部分，忽略时区
-            time_match = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', create_date_str)
-            if not time_match:
-                return 24 * 30
-            
-            create_time = datetime.fromisoformat(time_match.group(1))
-            current_time = datetime.now()
-            
-            # 计算时间差（小时）
-            time_diff = current_time - create_time
-            hours = time_diff.total_seconds() / 3600
-            
+
+            hours = (datetime.now(timezone.utc) - create_time).total_seconds() / 3600
             return max(0.1, hours)  # 最小0.1小时，避免除零
             
         except Exception as e:
@@ -1559,7 +1328,7 @@ class PixivSpider:
         Returns:
             图片详细信息，失败返回None
         """
-        async with PixivSpider._detail_semaphore:
+        async with self._detail_semaphore:
             return await self._get_illust_details_unlimited(illust_id)
 
     async def _get_illust_details_unlimited(self, illust_id: str) -> Optional[Dict[str, Any]]:
@@ -1608,7 +1377,7 @@ class PixivSpider:
         Returns:
             图片页面列表，每个页面包含urls和尺寸信息，失败返回None
         """
-        async with PixivSpider._detail_semaphore:
+        async with self._detail_semaphore:
             return await self._get_illust_pages_unlimited(illust_id)
 
     async def _get_illust_pages_unlimited(self, illust_id: str) -> Optional[List[Dict[str, Any]]]:
@@ -1657,68 +1426,9 @@ class PixivSpider:
         Returns:
             替换后的图片URL
         """
-        try:
-            if not url or not isinstance(url, str):
-                return url
-            
-            # 将 i.pximg.net 替换为 i.yuki.sh
-            replaced_url = url.replace('i.pximg.net', 'i.isekai-inn.uno')
-            
-            # 如果发生了替换，记录日志
-            if replaced_url != url:
-                logger.debug(f"URL替换: {url} -> {replaced_url}")
-            
-            return replaced_url
-        except Exception as e:
-            logger.debug(f"URL替换异常: {e}")
+        if not url or not isinstance(url, str) or not config.image_proxy_host:
             return url
-
-    def _ensure_proxy_url(self, url_or_urls: Union[str, List[str]]) -> List[str]:
-        """
-        确保URL使用反代，统一返回URL列表
-        
-        Args:
-            url_or_urls: 单个URL字符串或URL列表
-            
-        Returns:
-            经过反代处理的URL列表
-        """
-        try:
-            if not url_or_urls:
-                return []
-            
-            result_urls = []
-            
-            if isinstance(url_or_urls, str):
-                # 单个URL字符串
-                if url_or_urls.strip():
-                    replaced_url = self._replace_image_url(url_or_urls.strip())
-                    result_urls.append(replaced_url)
-            elif isinstance(url_or_urls, list):
-                # URL列表
-                for url in url_or_urls:
-                    if isinstance(url, str) and url.strip():
-                        replaced_url = self._replace_image_url(url.strip())
-                        result_urls.append(replaced_url)
-                    elif url:  # 非字符串类型，尝试转换
-                        url_str = str(url)
-                        if url_str.strip():
-                            replaced_url = self._replace_image_url(url_str.strip())
-                            result_urls.append(replaced_url)
-                            logger.debug(f"URL类型转换: {type(url)} -> str, 值: {replaced_url}")
-            else:
-                # 其他类型，尝试转换为字符串
-                url_str = str(url_or_urls)
-                if url_str.strip():
-                    replaced_url = self._replace_image_url(url_str.strip())
-                    result_urls.append(replaced_url)
-                    logger.debug(f"URL类型转换: {type(url_or_urls)} -> str, 值: {replaced_url}")
-            
-            return result_urls
-            
-        except Exception as e:
-            logger.debug(f"确保反代URL异常: {e}")
-            return []
+        return url.replace("i.pximg.net", config.image_proxy_host)
 
     async def get_illust_original_urls(self, illust_id: str) -> Optional[List[str]]:
         """
@@ -1731,8 +1441,8 @@ class PixivSpider:
             原始图片URL列表，失败返回None
         """
         try:
-            if illust_id in PixivSpider._original_url_cache:
-                return PixivSpider._original_url_cache[illust_id]
+            if illust_id in self._original_url_cache:
+                return self._original_url_cache[illust_id]
 
             pages = await self.get_illust_pages(illust_id)
             if not pages:
@@ -1748,10 +1458,10 @@ class PixivSpider:
                     replaced_url = self._replace_image_url(original_url)
                     original_urls.append(replaced_url)
             
-            PixivSpider._original_url_cache[illust_id] = original_urls
-            if len(PixivSpider._original_url_cache) > 1000:
-                oldest_key = next(iter(PixivSpider._original_url_cache))
-                del PixivSpider._original_url_cache[oldest_key]
+            self._original_url_cache[illust_id] = original_urls
+            if len(self._original_url_cache) > 1000:
+                oldest_key = next(iter(self._original_url_cache))
+                del self._original_url_cache[oldest_key]
 
             logger.debug(f"获取到 {len(original_urls)} 个原始图片URL - ID: {illust_id}")
             return original_urls
@@ -1760,754 +1470,7 @@ class PixivSpider:
             logger.debug(f"获取原始图片URL异常: {e}")
             return None
 
-    async def search_images(self, 
-                           tags: Union[str, List[str]], 
-                           mode: str = "random", 
-                           count: int = 1, 
-                           min_quality_score: float = 60.0,
-                           max_attempts: int = 10,
-                           min_bookmarks: int = 0) -> Optional[Dict[str, Any]]:
-        """
-        搜图机器人核心功能
-        
-        Args:
-            tags: 搜索标签，可以是字符串（单tag）或列表（多tag）
-            mode: 搜图模式
-                - "random": 随机图（默认），在搜索结果中随机选择，检查质量评分
-                - "recent": 近日美图，从popular.recent中选择
-                - "popular": 美图，从popular.permanent中选择
-            count: 返回图片数量，1-5张，默认1张
-            min_quality_score: 最低质量评分要求，仅对random模式有效，默认60分
-            max_attempts: 最大尝试次数，仅对random模式有效，默认10次
-            
-        Returns:
-            搜图结果字典，包含图片列表、统计信息等，失败返回None
-        """
-        try:
-            # 参数验证
-            if count < 1 or count > 5:
-                logger.debug(f"图片数量必须在1-5之间，当前值: {count}")
-                return None
-            
-            if mode not in ["random", "recent", "popular"]:
-                logger.debug(f"不支持的搜图模式: {mode}，支持的模式: random, recent, popular")
-                return None
-            
-            # 处理标签
-            if isinstance(tags, str):
-                tags = [tags.strip()] if tags.strip() else []
-            elif isinstance(tags, list):
-                tags = [tag.strip() for tag in tags if tag and tag.strip()]
-            else:
-                logger.debug("标签参数必须是字符串或字符串列表")
-                return None
-            
-            if not tags:
-                logger.debug("搜索标签不能为空")
-                return None
-            
-            search_keyword = ' '.join(tags)
-            logger.debug(f"开始搜图 - 关键词: '{search_keyword}', 模式: {mode}, 数量: {count}, 收藏门槛: >{min_bookmarks}")
-            
-            # 执行搜索
-            search_result = await self.search_illustrations(search_keyword)
-            if not search_result:
-                logger.debug(f"搜索失败: {search_keyword}")
-                if not self.last_error_reason:
-                    self.last_error_reason = "search_failed"
-                return None
-            
-            # 根据模式获取图片
-            if mode == "random":
-                images = await self._get_random_images(
-                    search_result, count, min_quality_score, max_attempts, min_bookmarks
-                )
-            elif mode == "recent":
-                images = await self._get_recent_popular_images(search_result, count)
-            elif mode == "popular":
-                images = await self._get_permanent_popular_images(search_result, count)
-            else:
-                images = []
-            
-            if not images:
-                logger.debug(f"未找到符合条件的图片")
-                self.last_error_reason = "no_qualified_images"
-                return None
-            
-            # 构建返回结果
-            result = {
-                'search_info': {
-                    'tags': tags,
-                    'search_keyword': search_keyword,
-                    'mode': mode,
-                    'requested_count': count,
-                    'actual_count': len(images),
-                    'min_quality_score': min_quality_score if mode == "random" else None,
-                    'min_bookmarks': min_bookmarks,
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                },
-                'images': images,
-                'statistics': {
-                    'total_search_results': search_result.get('total', 0),
-                    'popular_recent_count': len(search_result.get('popular', {}).get('recent', [])),
-                    'popular_permanent_count': len(search_result.get('popular', {}).get('permanent', [])),
-                    'regular_illust_count': len(search_result.get('illusts', []))
-                }
-            }
-            
-            logger.debug(f"搜图完成 - 找到 {len(images)} 张图片")
-            self.last_error_reason = None
-            return result
-            
-        except Exception as e:
-            reason = self._record_http_error(e)
-            logger.debug(f"搜图异常: {e} ({reason})")
-            return None
-
-    async def _get_random_images(self, 
-                                search_result: Dict[str, Any], 
-                                count: int, 
-                                min_quality_score: float,
-                                max_attempts: int,
-                                min_bookmarks: int = 0) -> List[Dict[str, Any]]:
-        """
-        获取随机图片（带质量评分检查，支持小众tag降级策略）
-        
-        Args:
-            search_result: 搜索结果
-            count: 需要的图片数量
-            min_quality_score: 最低质量评分
-            max_attempts: 最大尝试次数
-            
-        Returns:
-            符合条件的图片列表
-        """
-        try:
-            images = []
-            attempts = 0
-            used_image_ids = set()
-            failed_candidates = []  # 存储不符合要求的候选图片
-            
-            # 优先从热门作品中选择
-            all_candidates = []
-            
-            # 添加热门作品到候选池
-            popular_recent = search_result.get('popular', {}).get('recent', [])
-            popular_permanent = search_result.get('popular', {}).get('permanent', [])
-            regular_illusts = search_result.get('illusts', [])
-            
-            # 候选池优先级：热门近期 > 热门永久 > 普通作品
-            all_candidates.extend(popular_recent)
-            all_candidates.extend(popular_permanent)
-            all_candidates.extend(regular_illusts)
-            
-            if not all_candidates:
-                logger.debug("没有找到任何候选图片")
-                return []
-            
-            logger.debug(f"候选图片池: {len(all_candidates)} 张（热门近期: {len(popular_recent)}, 热门永久: {len(popular_permanent)}, 普通: {len(regular_illusts)}）")
-            
-            # 第一阶段：尝试找到符合质量要求的图片
-            while len(images) < count and attempts < max_attempts:
-                attempts += 1
-                
-                # 随机选择候选图片
-                if not all_candidates:
-                    break
-                
-                candidate = random.choice(all_candidates)
-                image_id = candidate.get('id')
-                
-                if not image_id or image_id in used_image_ids:
-                    continue
-                
-                used_image_ids.add(image_id)
-                
-                logger.debug(f"尝试第 {attempts} 次 - 检查图片 ID: {image_id}")
-                
-                # 获取详细信息和质量评分
-                quality_score = None
-                try:
-                    illust_details = await self.get_illust_details(image_id)
-                    if illust_details:
-                        quality_score = self.calculate_quality_score(illust_details)
-                        logger.debug(f"质量评分: {quality_score['total_score']} ({quality_score['quality_level']})")
-                    else:
-                        logger.debug("获取图片详情失败，跳过质量评分")
-                        quality_score = None
-                except Exception as e:
-                    logger.debug(f"质量评分计算异常: {e}")
-                    quality_score = None
-                
-                bookmark_count = 0
-                if illust_details:
-                    bookmark_count = int(illust_details.get('bookmarkCount', 0) or 0)
-
-                # 检查质量评分和收藏数
-                if (
-                    quality_score
-                    and quality_score['total_score'] >= min_quality_score
-                    and bookmark_count > min_bookmarks
-                ):
-                    # 获取原始图片URL
-                    original_urls = await self.get_illust_original_urls(image_id)
-                    primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                    
-                    # 构建图片信息（urls字段返回URL数组）
-                    image_info = {
-                        'id': image_id,
-                        'title': candidate.get('title', ''),
-                        'urls': original_urls if original_urls else [primary_url],  # 🔥 改造为URL数组
-                        'tags': candidate.get('tags', []),
-                        'userId': candidate.get('userId', ''),
-                        'userName': candidate.get('userName', ''),
-                        'pageCount': candidate.get('pageCount', 1),
-                        'width': candidate.get('width', 0),
-                        'height': candidate.get('height', 0),
-                        'illustType': candidate.get('illustType', 0),
-                        'xRestrict': candidate.get('xRestrict', 0),
-                        'description': candidate.get('description', ''),
-                        'createDate': candidate.get('createDate', ''),
-                        'aiType': candidate.get('aiType', 0),
-                        'profileImageUrl': candidate.get('profileImageUrl', ''),
-                        'source': 'random_selection',
-                        'bookmarkCount': bookmark_count
-                    }
-                    
-                    images.append(image_info)
-                    logger.debug(f"✅ 图片符合要求 - ID: {image_id}, 评分: {quality_score['total_score']}, 收藏: {bookmark_count}")
-                else:
-                    # 存储不符合要求的候选图片，用于降级处理
-                    failed_candidates.append({
-                        'candidate': candidate,
-                        'quality_score': quality_score,
-                        'reason': 'low_bookmarks' if bookmark_count <= min_bookmarks else ('low_quality' if quality_score else 'no_score'),
-                        'bookmark_count': bookmark_count
-                    })
-                    score_text = f"{quality_score['total_score']}" if quality_score else "无评分"
-                    logger.debug(f"❌ 图片不符合要求 - ID: {image_id}, 评分: {score_text} < {min_quality_score} 或收藏 {bookmark_count} <= {min_bookmarks}")
-            
-            # 第二阶段：无收藏门槛时保留旧降级策略；有收藏门槛时不降级破坏质量要求
-            if min_bookmarks <= 0 and len(images) < count and failed_candidates:
-                logger.debug(f"🔄 启用降级策略 - 高质量图片不足，从剩余候选中选择最佳图片")
-                
-                # 按质量评分排序失败的候选图片（有评分的优先）
-                failed_candidates.sort(key=lambda x: (
-                    0 if x['quality_score'] else 1,  # 有评分的优先
-                    -(x['quality_score']['total_score'] if x['quality_score'] else 0)  # 按评分降序
-                ))
-                
-                # 补充剩余需要的图片
-                needed = count - len(images)
-                for i, failed_item in enumerate(failed_candidates[:needed]):
-                    candidate = failed_item['candidate']
-                    quality_score = failed_item['quality_score']
-                    image_id = candidate.get('id', '')
-                    
-                    # 🔥 降级时也获取原始图片URL
-                    original_urls = await self.get_illust_original_urls(image_id)
-                    primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                    
-                    image_info = {
-                        'id': image_id,
-                        'title': candidate.get('title', ''),
-                        'urls': original_urls if original_urls else [primary_url],  # 🔥 返回实际图片URL数组
-                        'tags': candidate.get('tags', []),
-                        'userId': candidate.get('userId', ''),
-                        'userName': candidate.get('userName', ''),
-                        'pageCount': candidate.get('pageCount', 1),
-                        'width': candidate.get('width', 0),
-                        'height': candidate.get('height', 0),
-                        'illustType': candidate.get('illustType', 0),
-                        'xRestrict': candidate.get('xRestrict', 0),
-                        'description': candidate.get('description', ''),
-                        'createDate': candidate.get('createDate', ''),
-                        'aiType': candidate.get('aiType', 0),
-                        'profileImageUrl': candidate.get('profileImageUrl', ''),
-                        'source': 'fallback_selection'
-                    }
-                    
-                    images.append(image_info)
-                    score_text = f"{quality_score['total_score']}" if quality_score else "无评分"
-                    logger.debug(f"🔄 降级选择 - ID: {candidate.get('id')}, 评分: {score_text} (原因: {failed_item['reason']})")
-            
-            # 第三阶段：如果仍然不足，直接从剩余候选中随机选择
-            if min_bookmarks <= 0 and len(images) < count:
-                logger.debug(f"🔄 最终降级 - 仍然不足，从剩余候选中随机选择")
-                
-                # 获取未使用的候选图片
-                remaining_candidates = [
-                    candidate for candidate in all_candidates 
-                    if candidate.get('id') not in [img['id'] for img in images]
-                ]
-                
-                needed = count - len(images)
-                selected = random.sample(remaining_candidates, min(needed, len(remaining_candidates)))
-                
-                for candidate in selected:
-                    image_id = candidate.get('id', '')
-                    
-                    # 🔥 最终降级时也获取原始图片URL
-                    original_urls = await self.get_illust_original_urls(image_id)
-                    primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                    
-                    image_info = {
-                        'id': image_id,
-                        'title': candidate.get('title', ''),
-                        'url': original_urls if original_urls else [primary_url],  # 🔥 返回实际图片URL
-                        'tags': candidate.get('tags', []),
-                        'userId': candidate.get('userId', ''),
-                        'userName': candidate.get('userName', ''),
-                        'pageCount': candidate.get('pageCount', 1),
-                        'width': candidate.get('width', 0),
-                        'height': candidate.get('height', 0),
-                        'illustType': candidate.get('illustType', 0),
-                        'xRestrict': candidate.get('xRestrict', 0),
-                        'description': candidate.get('description', ''),
-                        'createDate': candidate.get('createDate', ''),
-                        'aiType': candidate.get('aiType', 0),
-                        'profileImageUrl': candidate.get('profileImageUrl', ''),
-                        'source': 'author_final'
-                    }
-                    
-                    images.append(image_info)
-                    logger.debug(f"🔄 最终选择 - ID: {candidate.get('id')}, 无质量评分")
-            
-            logger.debug(f"随机模式完成 - 尝试 {attempts} 次，找到 {len(images)} 张图片")
-            
-            # 统计不同来源的图片数量
-            source_count = {}
-            for img in images:
-                source = img.get('source', 'unknown')
-                source_count[source] = source_count.get(source, 0) + 1
-            
-            logger.debug(f"图片来源统计: {dict(source_count)}")
-            
-            return images
-            
-        except Exception as e:
-            logger.debug(f"获取随机图片异常: {e}")
-            return []
-
-    async def _get_recent_popular_images(self, search_result: Dict[str, Any], count: int) -> List[Dict[str, Any]]:
-        """
-        获取近日美图（从popular.recent中选择）
-        
-        Args:
-            search_result: 搜索结果
-            count: 需要的图片数量
-            
-        Returns:
-            图片列表
-        """
-        try:
-            popular_recent = search_result.get('popular', {}).get('recent', [])
-            
-            if not popular_recent:
-                logger.debug("没有找到近日热门作品")
-                return []
-            
-            logger.debug(f"近日热门作品池: {len(popular_recent)} 张")
-            
-            # 随机选择指定数量的图片
-            selected_count = min(count, len(popular_recent))
-            selected_images = random.sample(popular_recent, selected_count)
-            
-            # 构建图片信息
-            images = []
-            for candidate in selected_images:
-                # 获取原始图片URL
-                original_urls = await self.get_illust_original_urls(candidate.get('id', ''))
-                primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                
-                image_info = {
-                    'id': candidate.get('id', ''),
-                    'title': candidate.get('title', ''),
-                    'urls': original_urls if original_urls else [primary_url],  # 🔥 改造为URL数组
-                    'tags': candidate.get('tags', []),
-                    'userId': candidate.get('userId', ''),
-                    'userName': candidate.get('userName', ''),
-                    'pageCount': candidate.get('pageCount', 1),
-                    'width': candidate.get('width', 0),
-                    'height': candidate.get('height', 0),
-                    'illustType': candidate.get('illustType', 0),
-                    'xRestrict': candidate.get('xRestrict', 0),
-                    'description': candidate.get('description', ''),
-                    'createDate': candidate.get('createDate', ''),
-                    'aiType': candidate.get('aiType', 0),
-                    'profileImageUrl': candidate.get('profileImageUrl', ''),
-                    'source': 'popular_recent'
-                }
-                images.append(image_info)
-            
-            logger.debug(f"近日美图模式完成 - 选择 {len(images)} 张图片")
-            return images
-            
-        except Exception as e:
-            logger.debug(f"获取近日美图异常: {e}")
-            return []
-
-    async def _get_permanent_popular_images(self, search_result: Dict[str, Any], count: int) -> List[Dict[str, Any]]:
-        """
-        获取美图（从popular.permanent中选择）
-        
-        Args:
-            search_result: 搜索结果
-            count: 需要的图片数量
-            
-        Returns:
-            图片列表
-        """
-        try:
-            popular_permanent = search_result.get('popular', {}).get('permanent', [])
-            
-            if not popular_permanent:
-                logger.debug("没有找到永久热门作品")
-                return []
-            
-            logger.debug(f"永久热门作品池: {len(popular_permanent)} 张")
-            
-            # 随机选择指定数量的图片
-            selected_count = min(count, len(popular_permanent))
-            selected_images = random.sample(popular_permanent, selected_count)
-            
-            # 构建图片信息
-            images = []
-            for candidate in selected_images:
-                # 获取原始图片URL
-                original_urls = await self.get_illust_original_urls(candidate.get('id', ''))
-                primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                
-                image_info = {
-                    'id': candidate.get('id', ''),
-                    'title': candidate.get('title', ''),
-                    'urls': original_urls if original_urls else [primary_url],  # 🔥 改造为URL数组
-                    'tags': candidate.get('tags', []),
-                    'userId': candidate.get('userId', ''),
-                    'userName': candidate.get('userName', ''),
-                    'pageCount': candidate.get('pageCount', 1),
-                    'width': candidate.get('width', 0),
-                    'height': candidate.get('height', 0),
-                    'illustType': candidate.get('illustType', 0),
-                    'xRestrict': candidate.get('xRestrict', 0),
-                    'description': candidate.get('description', ''),
-                    'createDate': candidate.get('createDate', ''),
-                    'aiType': candidate.get('aiType', 0),
-                    'profileImageUrl': candidate.get('profileImageUrl', ''),
-                    'source': 'popular_permanent'
-                }
-                images.append(image_info)
-            
-            logger.debug(f"美图模式完成 - 选择 {len(images)} 张图片")
-            return images
-            
-        except Exception as e:
-            logger.debug(f"获取美图异常: {e}")
-            return []
-
-    async def get_random_image(
-        self,
-        user_qq: Optional[str] = None,
-        max_attempts: int = 5,
-        min_bookmarks: int = 100,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        获取随机图片推荐（保持向后兼容）
-        
-        Args:
-            user_qq: 用户QQ号（可选，用于日志记录）
-            max_attempts: 最大尝试次数（不同tag），默认5次
-            
-        Returns:
-            图片推荐信息，包含tag、图片、质量评分等，失败返回None
-        """
-        try:
-            user_info = f"用户 {user_qq}" if user_qq else "匿名用户"
-            logger.debug(f"开始为{user_info}获取随机图片推荐")
-            
-            # 1. 获取可用tag
-            available_tags = list(self.preferred_tags)
-            if not available_tags:
-                logger.debug("喜好tag池为空，无法获取图片推荐")
-                return None
-            
-            seed = self._get_daily_seed(user_qq or "anonymous")
-            start_index = seed % len(available_tags)
-            ordered_tags = available_tags[start_index:] + available_tags[:start_index]
-
-            # 2. 尝试多个tag，直到找到有热门作品的tag
-            attempted_tags = []
-            
-            for attempt, selected_tag in enumerate(ordered_tags[:max_attempts]):
-                if selected_tag in attempted_tags:
-                    logger.debug("已尝试所有可用tag，都没有找到热门作品")
-                    break
-
-                attempted_tags.append(selected_tag)
-                
-                logger.debug(f"尝试第 {attempt + 1} 次，选中tag: {selected_tag}")
-                
-                # 3. 搜索该tag的热门作品
-                search_result = await self.search_illustrations(selected_tag)
-                if not search_result:
-                    logger.debug(f"搜索tag '{selected_tag}' 失败，尝试下一个tag")
-                    continue
-                
-                # 4. 检查是否有热门作品
-                popular_images = search_result.get('popular', {}).get('recent', [])
-                if not popular_images:
-                    logger.debug(f"tag '{selected_tag}' 没有热门作品，尝试下一个tag")
-                    continue
-                
-                logger.debug(f"tag '{selected_tag}' 找到热门作品 {len(popular_images)} 张")
-                
-                # 5. 根据每日种子稳定选择，并要求收藏数达标
-                offset = seed % len(popular_images)
-                ordered_images = popular_images[offset:] + popular_images[:offset]
-                for selected_image in ordered_images:
-                    if not selected_image:
-                        continue
-
-                    quality_score = None
-                    illust_details = None
-                    illust_id = selected_image.get("id")
-                    if illust_id:
-                        illust_details = await self.get_illust_details(illust_id)
-                        if illust_details:
-                            quality_score = self.calculate_quality_score(illust_details)
-                            logger.debug(f"质量评分: {quality_score['total_score']} ({quality_score['quality_level']})")
-
-                    bookmark_count = int(illust_details.get("bookmarkCount", 0) or 0) if illust_details else 0
-                    if bookmark_count <= min_bookmarks:
-                        logger.debug(f"每日一图跳过低收藏作品: ID={illust_id}, 收藏={bookmark_count}")
-                        continue
-
-                    selected_image["bookmarkCount"] = bookmark_count
-                    result = {
-                        'user_qq': user_qq,
-                        'tag': selected_tag,
-                        'image': selected_image,
-                        'date': datetime.now().strftime("%Y-%m-%d"),
-                        'available_tags_count': len(available_tags),
-                        'available_images_count': len(popular_images),
-                        'attempted_tags': attempted_tags,
-                        'quality_score': quality_score
-                    }
-                
-                    logger.debug(f"图片推荐获取成功: tag={selected_tag}, image_id={selected_image.get('id')}, 收藏={bookmark_count}, 质量评分={quality_score['total_score'] if quality_score else 'N/A'}")
-                    return result
-            
-            # 如果所有尝试都失败了
-            logger.debug(f"尝试了 {len(attempted_tags)} 个tag都没有找到热门作品: {', '.join(attempted_tags)}")
-            return None
-            
-        except Exception as e:
-            logger.debug(f"获取图片推荐异常: {e}")
-            return None
-
-    async def get_tag_latest_images(self, 
-                                   tag: Union[str, List[str]], 
-                                   count: int = 5,
-                                   hours_limit: int = 24,
-                                   min_bookmarks: int = 0) -> Optional[Dict[str, Any]]:
-        """
-        获取某个标签的最新更新图片（重新设计版本 - 专注时效性）
-        
-        Args:
-            tag: 搜索标签，可以是字符串（单tag）或列表（多tag）
-            count: 返回图片数量，1-10张，默认5张
-            hours_limit: 时间限制（小时），只获取指定小时内的更新，默认24小时
-            
-        Returns:
-            最新图片结果字典，包含图片列表、统计信息等，失败返回None
-        """
-        try:
-            # 参数验证
-            if count < 1 or count > 10:
-                logger.debug(f"图片数量必须在1-10之间，当前值: {count}")
-                return None
-            
-            if hours_limit < 1 or hours_limit > 168:  # 最大7天
-                logger.debug(f"时间限制必须在1-168小时之间，当前值: {hours_limit}")
-                return None
-            
-            # 处理标签
-            if isinstance(tag, str):
-                tags = [tag.strip()] if tag.strip() else []
-            elif isinstance(tag, list):
-                tags = [tag.strip() for tag in tag if tag and tag.strip()]
-            else:
-                logger.debug("标签参数必须是字符串或字符串列表")
-                return None
-            
-            if not tags:
-                logger.debug("搜索标签不能为空")
-                return None
-            
-            search_keyword = ' '.join(tags)
-            logger.debug(f"开始获取标签最新图片 - 关键词: '{search_keyword}', 数量: {count}, 时间限制: {hours_limit}小时, 收藏门槛: >{min_bookmarks}")
-            
-            # 计算时间阈值（修复时区问题）
-            from datetime import datetime, timedelta, timezone
-            time_threshold = datetime.now(timezone.utc) - timedelta(hours=hours_limit)
-            time_threshold_str = time_threshold.strftime("%Y-%m-%dT%H:%M:%S UTC")
-            
-            logger.debug(f"时间阈值: {time_threshold_str} 之后的作品")
-            
-            # 逐张检查图片，数量足够后立即返回（最多只查询第一页）
-            found_images = []
-            max_pages = 1  # 最多搜索1页
-            page = 1
-            total_checked = 0
-            
-            while len(found_images) < count and page <= max_pages:
-                logger.debug(f"搜索第 {page} 页...")
-                
-                # 搜索当前页
-                search_result = await self._search_illustrations_simple(search_keyword, page=page)
-                if not search_result:
-                    logger.debug(f"第 {page} 页搜索失败")
-                    break
-                
-                # 获取当前页的图片
-                page_images = search_result.get('illusts', [])
-                if not page_images:
-                    logger.debug(f"第 {page} 页没有图片")
-                    break
-                
-                logger.debug(f"第 {page} 页找到 {len(page_images)} 张图片")
-                
-                # 逐张检查图片
-                page_valid_count = 0
-                for image in page_images:
-                    total_checked += 1
-                    
-                    create_date_str = image.get('createDate', '')
-                    if not create_date_str:
-                        continue
-                    
-                    # 时间解析
-                    create_time = self._parse_pixiv_time(create_date_str)
-                    if not create_time:
-                        continue
-                    
-                    # 检查是否在时间范围内
-                    if create_time >= time_threshold:
-                        illust_details = await self.get_illust_details(image.get('id', ''))
-                        bookmark_count = int(illust_details.get('bookmarkCount', 0) or 0) if illust_details else 0
-                        if bookmark_count <= min_bookmarks:
-                            logger.debug(f"最新图片跳过低收藏作品: ID={image.get('id')}, 收藏={bookmark_count} <= {min_bookmarks}")
-                            continue
-
-                        # 计算上传小时数
-                        current_time = datetime.now(timezone.utc)
-                        hours_since_upload = (current_time - create_time).total_seconds() / 3600
-                        image['hours_since_upload'] = hours_since_upload
-                        image['bookmarkCount'] = bookmark_count
-                        found_images.append(image)
-                        page_valid_count += 1
-                        
-                        logger.debug(f"找到有效图片 {len(found_images)}/{count}: ID={image.get('id')}, 上传时间={hours_since_upload:.1f}小时前")
-                        
-                        # 数量足够，立即返回
-                        if len(found_images) >= count:
-                            logger.debug(f"已找到足够图片，停止搜索")
-                            break
-                    else:
-                        # 如果图片不在时间范围内，且这是按时间排序的，说明后面的图片更旧
-                        hours_since_upload = (datetime.now(timezone.utc) - create_time).total_seconds() / 3600
-                        logger.debug(f"图片 {image.get('id')} 不在时间范围内（{hours_since_upload:.1f}小时前），可能已到时间边界")
-                        # 可以选择继续检查几张，或者直接跳到下一页
-                
-                logger.debug(f"第 {page} 页检查完成: 找到 {page_valid_count} 张有效图片，累计 {len(found_images)} 张")
-                
-                # 如果当前页没有新图片，可能已经到了最早的页面
-                if page_valid_count == 0:
-                    logger.debug(f"第 {page} 页没有符合时间范围的图片，停止搜索")
-                    break
-                
-                # 如果数量已足够，退出循环
-                if len(found_images) >= count:
-                    break
-                
-                page += 1
-                
-                # 短暂延迟避免请求过快
-                await asyncio.sleep(0.1)
-            
-            if not found_images:
-                logger.debug(f"在最近 {hours_limit} 小时内没有找到标签 '{search_keyword}' 的图片")
-                self.last_error_reason = "no_recent_images"
-                return None
-            
-            logger.debug(f"总共找到 {len(found_images)} 张最新图片")
-            
-            # 按时间排序（最新的在前）
-            found_images.sort(key=lambda x: x.get('createDate', ''), reverse=True)
-            
-            # 选择指定数量的图片
-            selected_images = found_images[:count]
-            
-            # 构建简化的图片信息（专注时效性，不获取质量评分）
-            enhanced_images = []
-            for image in selected_images:
-                # 🔥 获取实际图片URL而不是缩略图
-                original_urls = await self.get_illust_original_urls(image.get('id', ''))
-                primary_url = original_urls[0] if original_urls else image.get('url', '')
-                
-                enhanced_image = {
-                    'id': image.get('id', ''),
-                    'title': image.get('title', ''),
-                    'urls': original_urls if original_urls else [primary_url],  # 🔥 返回实际图片URL数组
-                    'tags': image.get('tags', []),
-                    'userId': image.get('userId', ''),
-                    'userName': image.get('userName', ''),
-                    'pageCount': image.get('pageCount', 1),
-                    'width': image.get('width', 0),
-                    'height': image.get('height', 0),
-                    'illustType': image.get('illustType', 0),
-                    'xRestrict': image.get('xRestrict', 0),
-                    'description': image.get('description', ''),
-                    'createDate': image.get('createDate', ''),
-                    'aiType': image.get('aiType', 0),
-                    'profileImageUrl': image.get('profileImageUrl', ''),
-                    'hours_since_upload': image.get('hours_since_upload', 0),
-                    'source': 'tag_latest',
-                    'bookmarkCount': image.get('bookmarkCount', 0)
-                }
-                enhanced_images.append(enhanced_image)
-            
-            # 构建返回结果
-            result = {
-                'search_info': {
-                    'tags': tags,
-                    'search_keyword': search_keyword,
-                    'requested_count': count,
-                    'actual_count': len(enhanced_images),
-                    'hours_limit': hours_limit,
-                    'time_threshold': time_threshold_str,
-                    'total_candidates': len(found_images),
-                    'pages_searched': page - 1,
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                },
-                'images': enhanced_images,
-                'statistics': {
-                    'total_found': len(found_images),
-                    'time_filtered': len(found_images),
-                    'avg_hours_since_upload': sum(img.get('hours_since_upload', 0) for img in enhanced_images) / len(enhanced_images) if enhanced_images else 0
-                }
-            }
-            
-            logger.debug(f"标签最新图片获取完成 - 找到 {len(enhanced_images)} 张图片")
-            self.last_error_reason = None
-            return result
-            
-        except Exception as e:
-            reason = self._record_http_error(e)
-            logger.debug(f"获取标签最新图片异常: {e} ({reason})")
-            return None
-
-    def _parse_pixiv_time(self, time_str: str) -> Optional[datetime]:
+    def parse_pixiv_time(self, time_str: str) -> Optional[datetime]:
         """
         解析Pixiv时间字符串（修复时区问题）
         
@@ -2517,35 +1480,20 @@ class PixivSpider:
         Returns:
             UTC时间的datetime对象，失败返回None
         """
+        if not time_str:
+            return None
         try:
-            from datetime import datetime, timezone, timedelta
-            
-            if not time_str:
-                return None
-            
-            # 处理Pixiv的日本时间格式 (+09:00)
-            if '+09:00' in time_str:
-                # 解析为带时区的时间
-                create_time = datetime.fromisoformat(time_str)
-                # 转换为UTC时间
-                utc_time = create_time.astimezone(timezone.utc)
-                return utc_time
-            elif '+00:00' in time_str or time_str.endswith('Z'):
-                # 处理UTC时间
-                if time_str.endswith('Z'):
-                    time_str = time_str[:-1] + '+00:00'
-                create_time = datetime.fromisoformat(time_str)
-                return create_time
-            else:
-                # 处理无时区信息的时间，假设为UTC
-                create_time = datetime.fromisoformat(time_str)
-                return create_time.replace(tzinfo=timezone.utc)
-                
-        except Exception as e:
+            if time_str.endswith("Z"):
+                time_str = time_str[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(time_str)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError as e:
             logger.debug(f"时间解析失败: {time_str}, 错误: {e}")
             return None
 
-    async def _search_illustrations_simple(self, 
+    async def search_latest_illustrations(self, 
                                           search_keyword: str, 
                                           page: int = 1, 
                                           page_size: int = 30) -> Optional[Dict[str, Any]]:
@@ -2600,14 +1548,14 @@ class PixivSpider:
             self.last_error_reason = None
             
             # 直接返回精简的数据结构（跳过复杂的标签检查）
-            return await self._extract_simplified_data_simple(raw_data, search_keyword)
+            return await self._extract_latest_data(raw_data, search_keyword)
             
         except Exception as e:
             reason = self._record_http_error(e)
             logger.debug(f"简化搜索图片异常: {e} ({reason})")
             return None
 
-    async def _extract_simplified_data_simple(self, 
+    async def _extract_latest_data(self, 
                                              raw_data: Dict[str, Any], 
                                              search_keyword: str) -> Dict[str, Any]:
         """
@@ -2628,7 +1576,7 @@ class PixivSpider:
                     'lastPage': 1,
                     'searchInfo': {
                         'keyword': search_keyword,
-                        'timestamp': __import__('datetime').datetime.now().isoformat()
+                        'timestamp': datetime.now().isoformat()
                     }
                 }
             
@@ -2644,7 +1592,7 @@ class PixivSpider:
                 illust_tags = illust.get('tags', [])
                 tag_translation = body.get('tagTranslation', {})
                 
-                if await self._should_block_image_with_translation(illust_tags, tag_translation):
+                if await self._should_block_image_with_translation(illust_tags, tag_translation=tag_translation):
                     blocked_count += 1
                     continue
                 
@@ -2684,7 +1632,7 @@ class PixivSpider:
                 # 搜索元信息
                 'searchInfo': {
                     'keyword': search_keyword,
-                    'timestamp': __import__('datetime').datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat()
                 }
             }
             
@@ -2699,435 +1647,9 @@ class PixivSpider:
                 'lastPage': 1,
                 'searchInfo': {
                     'keyword': search_keyword,
-                    'timestamp': __import__('datetime').datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat()
                 }
             }
-
-    async def get_author_images(self, 
-                             user_id: str, 
-                             mode: str = "recent", 
-                             count: int = 3) -> Optional[Dict[str, Any]]:
-        """
-        获取特定作者的图片（支持作者ID或圈名）
-        
-        Args:
-            user_id: 作者ID或圈名
-            mode: 获取模式
-                - "recent": 最新作品，按时间排序选择（默认）
-                - "popular": 热门作品，按收藏数排序选择
-                - "random": 随机选择（不检查质量评分，因为喜欢作者的用户想看所有更新）
-            count: 返回图片数量，1-5张，默认3张
-            
-        Returns:
-            作者图片结果字典，包含图片列表、作者信息等，失败返回None
-        """
-        try:
-            # 参数验证
-            if not user_id or not user_id.strip():
-                logger.debug("作者ID/圈名不能为空")
-                return None
-            
-            if count < 1 or count > 5:
-                logger.debug(f"图片数量必须在1-5之间，当前值: {count}")
-                return None
-            
-            if mode not in ["random", "recent", "popular"]:
-                logger.debug(f"不支持的获取模式: {mode}，支持的模式: random, recent, popular")
-                return None
-            
-            original_input = user_id.strip()
-            user_id = str(user_id).strip()
-            
-            # 尝试通过圈名查找作者ID
-            resolved_user_id = self.search_author_by_alias(user_id)
-            if resolved_user_id:
-                logger.debug(f"通过圈名 '{user_id}' 找到作者ID: {resolved_user_id}")
-                user_id = resolved_user_id
-                used_alias = True
-            else:
-                # 如果不是圈名，直接使用作为作者ID
-                used_alias = False
-            
-            logger.debug(f"开始获取作者图片 - ID: {user_id}, 模式: {mode}, 数量: {count}")
-            if used_alias:
-                logger.debug(f"使用圈名查询: '{original_input}' -> ID: {user_id}")
-            
-            # 检查是否为喜欢作者
-            is_favorite = user_id in self.favorite_authors
-            author_info = self.favorite_authors.get(user_id, {})
-            author_name = author_info.get('name', '未知作者')
-            
-            logger.debug(f"作者信息: {author_name} ({user_id}), 是否喜欢: {is_favorite}")
-            
-            # 获取作者信息和作品列表
-            author_data = await self.get_author_profile(user_id)
-            if not author_data:
-                logger.debug(f"获取作者作品失败: 无数据")
-                return None
-            
-            # 提取作者作品 - 从正确的API路径获取
-            # 新的API返回格式：body.illusts 是一个字典，键为作品ID
-            illusts_dict = author_data.get('illusts', {})
-            illusts = list(illusts_dict.values()) if isinstance(illusts_dict, dict) else []
-            if not illusts:
-                logger.debug(f"作者 {author_name} 没有作品")
-                return None
-            
-            logger.debug(f"作者 {author_name} 共有 {len(illusts)} 个作品")
-            
-            # 根据模式获取图片
-            if mode == "random":
-                images = await self._get_author_random_images(
-                    illusts, count, min_quality_score=60.0, max_attempts=10
-                )
-            elif mode == "recent":
-                images = await self._get_author_recent_images(illusts, count)
-            elif mode == "popular":
-                images = await self._get_author_popular_images(illusts, count)
-            else:
-                images = []
-            
-            if not images:
-                logger.debug(f"未找到符合条件的作者图片")
-                return None
-            
-            # 更新作者最后检查时间
-            if is_favorite:
-                self.update_author_last_check(user_id)
-            
-            # 构建返回结果
-            result = {
-                'author_info': {
-                    'user_id': user_id,
-                    'name': author_name,
-                    'is_favorite': is_favorite,
-                    'total_works': len(illusts),
-                    'profile_image_url': author_data.get('image', ''),
-                    'comment': author_data.get('comment', ''),
-                    'followable': author_data.get('followable', False)
-                },
-                'search_info': {
-                    'mode': mode,
-                    'requested_count': count,
-                    'actual_count': len(images),
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                },
-                'images': images
-            }
-            
-            logger.debug(f"作者图片获取完成 - 找到 {len(images)} 张图片")
-            return result
-            
-        except Exception as e:
-            logger.debug(f"获取作者图片异常: {e}")
-            return None
-
-    async def _get_author_random_images(self, 
-                                    illusts: List[Dict[str, Any]], 
-                                    count: int,
-                                    min_quality_score: float = 60.0,
-                                    max_attempts: int = 10) -> List[Dict[str, Any]]:
-        """
-        获取作者随机图片（带质量评分检查）
-        
-        Args:
-            illusts: 作者作品列表
-            count: 需要的图片数量
-            min_quality_score: 最低质量评分
-            max_attempts: 最大尝试次数
-            
-        Returns:
-            符合条件的图片列表
-        """
-        try:
-            images = []
-            attempts = 0
-            used_image_ids = set()
-            failed_candidates = []
-            
-            if not illusts:
-                logger.debug("作者作品列表为空")
-                return []
-            
-            logger.debug(f"作者作品池: {len(illusts)} 个作品")
-            
-            # 第一阶段：尝试找到符合质量要求的图片
-            while len(images) < count and attempts < max_attempts:
-                attempts += 1
-                
-                # 随机选择作品
-                if not illusts:
-                    break
-                
-                candidate = random.choice(illusts)
-                image_id = candidate.get('id')
-                
-                if not image_id or image_id in used_image_ids:
-                    continue
-                
-                used_image_ids.add(image_id)
-                
-                logger.debug(f"尝试第 {attempts} 次 - 检查作品 ID: {image_id}")
-                
-                # 获取详细信息和质量评分
-                quality_score = None
-                try:
-                    illust_details = await self.get_illust_details(image_id)
-                    if illust_details:
-                        quality_score = self.calculate_quality_score(illust_details)
-                        logger.debug(f"质量评分: {quality_score['total_score']} ({quality_score['quality_level']})")
-                    else:
-                        logger.debug("获取作品详情失败，跳过质量评分")
-                        quality_score = None
-                except Exception as e:
-                    logger.debug(f"质量评分计算异常: {e}")
-                    quality_score = None
-                
-                # 检查质量评分
-                if quality_score and quality_score['total_score'] >= min_quality_score:
-                    # 🔥 获取实际图片URL而不是缩略图
-                    original_urls = await self.get_illust_original_urls(image_id)
-                    primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                    
-                    # 构建图片信息
-                    image_info = {
-                        'id': image_id,
-                        'title': candidate.get('title', ''),
-                        'url': original_urls if original_urls else [primary_url],  # 🔥 返回实际图片URL数组
-                        'tags': candidate.get('tags', []),
-                        'userId': candidate.get('userId', ''),
-                        'userName': candidate.get('userName', ''),
-                        'pageCount': candidate.get('pageCount', 1),
-                        'width': candidate.get('width', 0),
-                        'height': candidate.get('height', 0),
-                        'illustType': candidate.get('illustType', 0),
-                        'xRestrict': candidate.get('xRestrict', 0),
-                        'description': candidate.get('description', ''),
-                        'createDate': candidate.get('createDate', ''),
-                        'aiType': candidate.get('aiType', 0),
-                        'profileImageUrl': candidate.get('profileImageUrl', ''),
-                        'quality_score': quality_score,
-                        'source': 'author_random'
-                    }
-                    
-                    images.append(image_info)
-                    logger.debug(f"✅ 作品符合要求 - ID: {image_id}, 评分: {quality_score['total_score']}")
-                else:
-                    # 存储不符合要求的候选作品
-                    failed_candidates.append({
-                        'candidate': candidate,
-                        'quality_score': quality_score,
-                        'reason': 'low_quality' if quality_score else 'no_score'
-                    })
-                    score_text = f"{quality_score['total_score']}" if quality_score else "无评分"
-                    logger.debug(f"❌ 作品不符合要求 - ID: {image_id}, 评分: {score_text} < {min_quality_score}")
-            
-            # 第二阶段：如果没找到足够的高质量图片，启用降级策略
-            if len(images) < count and failed_candidates:
-                logger.debug(f"🔄 启用降级策略 - 高质量作品不足，从剩余候选中选择最佳作品")
-                
-                # 按质量评分排序失败的候选作品
-                failed_candidates.sort(key=lambda x: (
-                    0 if x['quality_score'] else 1,  # 有评分的优先
-                    -(x['quality_score']['total_score'] if x['quality_score'] else 0)  # 按评分降序
-                ))
-                
-                # 补充剩余需要的图片
-                needed = count - len(images)
-                for i, failed_item in enumerate(failed_candidates[:needed]):
-                    candidate = failed_item['candidate']
-                    quality_score = failed_item['quality_score']
-                    image_id = candidate.get('id', '')
-                    
-                    # 🔥 降级时也获取原始图片URL
-                    original_urls = await self.get_illust_original_urls(image_id)
-                    primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                    
-                    image_info = {
-                        'id': image_id,
-                        'title': candidate.get('title', ''),
-                        'url': original_urls if original_urls else [primary_url],  # 🔥 返回实际图片URL
-                        'tags': candidate.get('tags', []),
-                        'userId': candidate.get('userId', ''),
-                        'userName': candidate.get('userName', ''),
-                        'pageCount': candidate.get('pageCount', 1),
-                        'width': candidate.get('width', 0),
-                        'height': candidate.get('height', 0),
-                        'illustType': candidate.get('illustType', 0),
-                        'xRestrict': candidate.get('xRestrict', 0),
-                        'description': candidate.get('description', ''),
-                        'createDate': candidate.get('createDate', ''),
-                        'aiType': candidate.get('aiType', 0),
-                        'profileImageUrl': candidate.get('profileImageUrl', ''),
-                        'source': 'author_fallback'
-                    }
-                    
-                    images.append(image_info)
-                    score_text = f"{quality_score['total_score']}" if quality_score else "无评分"
-                    logger.debug(f"🔄 降级选择 - ID: {candidate.get('id')}, 评分: {score_text} (原因: {failed_item['reason']})")
-            
-            # 第三阶段：如果仍然不足，直接从剩余作品中随机选择
-            if len(images) < count:
-                logger.debug(f"🔄 最终降级 - 仍然不足，从剩余作品中随机选择")
-                
-                # 获取未使用的作品
-                remaining_illusts = [
-                    illust for illust in illusts 
-                    if illust.get('id') not in [img['id'] for img in images]
-                ]
-                
-                needed = count - len(images)
-                selected = random.sample(remaining_illusts, min(needed, len(remaining_illusts)))
-                
-                for candidate in selected:
-                    # 🔥 获取实际图片URL而不是缩略图
-                    original_urls = await self.get_illust_original_urls(candidate.get('id', ''))
-                    primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                    
-                    image_info = {
-                        'id': candidate.get('id', ''),
-                        'title': candidate.get('title', ''),
-                        'url': original_urls if original_urls else [primary_url],  # 🔥 返回实际图片URL数组
-                        'tags': candidate.get('tags', []),
-                        'userId': candidate.get('userId', ''),
-                        'userName': candidate.get('userName', ''),
-                        'pageCount': candidate.get('pageCount', 1),
-                        'width': candidate.get('width', 0),
-                        'height': candidate.get('height', 0),
-                        'illustType': candidate.get('illustType', 0),
-                        'xRestrict': candidate.get('xRestrict', 0),
-                        'description': candidate.get('description', ''),
-                        'createDate': candidate.get('createDate', ''),
-                        'aiType': candidate.get('aiType', 0),
-                        'profileImageUrl': candidate.get('profileImageUrl', ''),
-                        'source': 'author_final'
-                    }
-                    
-                    images.append(image_info)
-                    logger.debug(f"🔄 最终选择 - ID: {candidate.get('id')}, 无质量评分")
-            
-            logger.debug(f"作者随机模式完成 - 尝试 {attempts} 次，找到 {len(images)} 张图片")
-            return images
-            
-        except Exception as e:
-            logger.debug(f"获取作者随机图片异常: {e}")
-            return []
-
-    async def _get_author_recent_images(self, illusts: List[Dict[str, Any]], count: int) -> List[Dict[str, Any]]:
-        """
-        获取作者最新作品
-        
-        Args:
-            illusts: 作者作品列表
-            count: 需要的图片数量
-            
-        Returns:
-            图片列表
-        """
-        try:
-            # 按创建时间排序（最新的在前）
-            sorted_illusts = sorted(
-                illusts, 
-                key=lambda x: x.get('createDate', ''), 
-                reverse=True
-            )
-            
-            # 选择最新的作品
-            selected_count = min(count, len(sorted_illusts))
-            selected_illusts = sorted_illusts[:selected_count]
-            
-            logger.debug(f"作者最新作品模式完成 - 选择 {len(selected_illusts)} 张最新作品")
-            
-            # 构建图片信息
-            images = []
-            for candidate in selected_illusts:
-                # 获取原始图片URL
-                original_urls = await self.get_illust_original_urls(candidate.get('id', ''))
-                primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                
-                image_info = {
-                    'id': candidate.get('id', ''),
-                    'title': candidate.get('title', ''),
-                    'url': original_urls if original_urls else [primary_url],  # 🔥 改造为URL数组
-                    'tags': candidate.get('tags', []),
-                    'userId': candidate.get('userId', ''),
-                    'userName': candidate.get('userName', ''),
-                    'pageCount': candidate.get('pageCount', 1),
-                    'width': candidate.get('width', 0),
-                    'height': candidate.get('height', 0),
-                    'illustType': candidate.get('illustType', 0),
-                    'xRestrict': candidate.get('xRestrict', 0),
-                    'description': candidate.get('description', ''),
-                    'createDate': candidate.get('createDate', ''),
-                    'aiType': candidate.get('aiType', 0),
-                    'profileImageUrl': candidate.get('profileImageUrl', ''),
-                    'source': 'author_recent'
-                }
-                images.append(image_info)
-            
-            return images
-            
-        except Exception as e:
-            logger.debug(f"获取作者最新作品异常: {e}")
-            return []
-
-    async def _get_author_popular_images(self, illusts: List[Dict[str, Any]], count: int) -> List[Dict[str, Any]]:
-        """
-        获取作者热门作品
-        
-        Args:
-            illusts: 作者作品列表
-            count: 需要的图片数量
-            
-        Returns:
-            图片列表
-        """
-        try:
-            # 按收藏数排序（收藏数多的在前）
-            sorted_illusts = sorted(
-                illusts, 
-                key=lambda x: x.get('bookmarkCount', 0), 
-                reverse=True
-            )
-            
-            # 选择最热门的作品
-            selected_count = min(count, len(sorted_illusts))
-            selected_illusts = sorted_illusts[:selected_count]
-            
-            logger.debug(f"作者热门作品模式完成 - 选择 {len(selected_illusts)} 张热门作品")
-            
-            # 构建图片信息
-            images = []
-            for candidate in selected_illusts:
-                # 获取原始图片URL
-                original_urls = await self.get_illust_original_urls(candidate.get('id', ''))
-                primary_url = original_urls[0] if original_urls else candidate.get('url', '')
-                
-                image_info = {
-                    'id': candidate.get('id', ''),
-                    'title': candidate.get('title', ''),
-                    'url': original_urls if original_urls else [primary_url],  # 🔥 改造为URL数组
-                    'tags': candidate.get('tags', []),
-                    'userId': candidate.get('userId', ''),
-                    'userName': candidate.get('userName', ''),
-                    'pageCount': candidate.get('pageCount', 1),
-                    'width': candidate.get('width', 0),
-                    'height': candidate.get('height', 0),
-                    'illustType': candidate.get('illustType', 0),
-                    'xRestrict': candidate.get('xRestrict', 0),
-                    'description': candidate.get('description', ''),
-                    'createDate': candidate.get('createDate', ''),
-                    'aiType': candidate.get('aiType', 0),
-                    'profileImageUrl': candidate.get('profileImageUrl', ''),
-                    'source': 'author_popular'
-                }
-                images.append(image_info)
-            
-            return images
-            
-        except Exception as e:
-            logger.debug(f"获取作者热门作品异常: {e}")
-            return []
 
     async def get_image_info(self, illust_id: str) -> Optional[Dict[str, Any]]:
         """

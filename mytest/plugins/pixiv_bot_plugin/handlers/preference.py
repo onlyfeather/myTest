@@ -1,7 +1,7 @@
 from nonebot_plugin_alconna import Alconna, Args, Arparma, on_alconna
 from nonebot_plugin_alconna.uniseg import UniMessage
 
-from ..common import pixiv_command
+from ..common import pixiv_command, report_error
 from ..pixiv import get_pixiv_spider
 from ..services.preference import handle_alias, handle_preference
 
@@ -30,7 +30,7 @@ async def content_preference_handle(result: Arparma):
             await UniMessage.text(handle_preference(spider, action, tag)).send()
 
     except Exception as e:
-        await UniMessage.text(f"内容偏好管理时发生错误：{str(e)}").send()
+        await report_error("内容偏好管理时发生错误", e)
 
 
 @alias_matcher.handle()
@@ -44,7 +44,7 @@ async def alias_manage_handle(result: Arparma):
             await UniMessage.text(handle_alias(spider, action, user_id, alias)).send()
 
     except Exception as e:
-        await UniMessage.text(f"圈名管理时发生错误：{str(e)}").send()
+        await report_error("圈名管理时发生错误", e)
 
 
 __all__ = [

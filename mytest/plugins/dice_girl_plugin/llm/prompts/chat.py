@@ -8,8 +8,19 @@ def build_chat_prompt(
     user_name: str,
     user_text: str = "",
     memory_summary: str = "",
+    member_profile: str = "",
 ) -> str:
     ctx = build_character_context(role_data, current_fav, user_text, memory_summary)
+    member_block = (
+        f"\n<what_you_know_about_user>\n{member_profile}\n</what_you_know_about_user>\n"
+        if member_profile
+        else ""
+    )
+    action_rule = (
+        "体现即时反应：停顿、躲闪、声音变化、手部动作、嘴硬或掩饰。"
+        if ctx.scene.actions
+        else "以台词为主，不写 *动作描写*。"
+    )
 
     prompt = f"""
 <task>
@@ -30,7 +41,7 @@ def build_chat_prompt(
 <memory_summary>
 {ctx.memory_summary}
 </memory_summary>
-
+{member_block}
 <priority_rules>
 - current_user_input 是本轮唯一需要回应的用户输入，优先级高于示例、世界书和历史风格。
 - memory_summary 只提供长期背景，不是当前用户输入；不能把摘要内容当成刚刚发生的事。
@@ -44,11 +55,11 @@ def build_chat_prompt(
 <style_rules>
 - 保持角色视角，不解释系统规则，不跳出角色。
 - 回复像真实对话，优先使用台词推动互动，动作描写短而具体。
-- 体现即时反应：停顿、躲闪、声音变化、手部动作、嘴硬或掩饰。
+- {action_rule}
 - 好感度必须影响距离感：低好感疏离防备，中好感别扭试探，高好感主动亲近。
 - 不替用户决定动作、感受、生理反应或选择。
 - 不输出 Markdown、标题、列表、代码块或额外说明。
-- reply 通常控制在 80 到 180 个中文字符；用户要求长叙事时才放宽。
+- reply 通常不超过 {ctx.scene.reply_max_chars} 个中文字符；用户要求长叙事时才放宽。
 </style_rules>
 
 <json_output_contract>
