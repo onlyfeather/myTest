@@ -53,7 +53,9 @@ async def fish_voices(*, api_key: str, base_url: str, proxy: str = "", timeout: 
     if not api_key.strip():
         raise ServiceError("请先填写并保存 Fish Audio 的 API Key")
     headers = {"Authorization": f"Bearer {api_key.strip()}"}
-    url = f"{base_url.rstrip('/')}/model"
+    from .fish_audio import api_root
+
+    url = f"{api_root(base_url)}/model"
     result: list[tuple[str, str]] = []
     async with http_client(proxy, timeout) as client:
         for params, tag in (

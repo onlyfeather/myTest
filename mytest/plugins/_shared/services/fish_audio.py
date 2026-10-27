@@ -23,6 +23,15 @@ FORMATS = (
 )
 
 
+def api_root(base_url: str) -> str:
+    """接口地址允许填成 https://api.fish.audio、.../v1 或 .../v1/tts，统一成不带路径的根地址。"""
+    url = base_url.strip().rstrip("/")
+    for suffix in ("/v1/tts", "/v1"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+    return url
+
+
 def build_payload(
     text: str, *, reference_id: str, audio_format: str, speed: float, volume: float
 ) -> dict[str, Any]:
@@ -60,7 +69,7 @@ async def synthesize(
     payload = build_payload(text, reference_id=reference_id, audio_format=audio_format, speed=speed, volume=volume)
     headers = {"Authorization": f"Bearer {api_key.strip()}", "model": model}
     async with http_client(proxy, timeout) as client:
-        resp = await client.post(f"{base_url.rstrip('/')}/v1/tts", json=payload, headers=headers)
+        resp = await client.post(f"{api_root(base_url)}/v1/tts", json=payload, headers=headers)
     if resp.status_code != 200:
         raise ServiceError(describe_http_error(NAME, resp))
     content_type = resp.headers.get("content-type", "")

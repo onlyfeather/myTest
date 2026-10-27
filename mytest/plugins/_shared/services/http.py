@@ -50,13 +50,36 @@ def describe_http_error(name: str, resp: httpx.Response) -> str:
     return "：".join(parts[:1]) + ("，" + "，".join(parts[1:]) if len(parts) > 1 else "")
 
 
+def _target(exc: Exception) -> str:
+    try:
+        url = exc.request.url  # type: ignore[attr-defined]
+    except (AttributeError, RuntimeError):
+        return ""
+    return f"{url.scheme}://{url.host}" + (f":{url.port}" if url.port else "")
+
+
+def _detail(exc: Exception) -> str:
+    text = str(exc).strip()
+    # 密钥不会出现在异常信息里，但 URL 可能很长，截断一下。
+    return text[:160] if text else type(exc).__name__
+
+
 def describe_exception(name: str, exc: Exception) -> str:
     if isinstance(exc, ServiceError):
         return str(exc)
-    if isinstance(exc, httpx.TimeoutException):
-        return f"{name} 请求超时"
+    target = _target(exc)
+    where = f"（{target}）" if target else ""
     if isinstance(exc, httpx.ProxyError):
-        return f"{name} 代理连接失败，检查代理地址"
+        return f"{name} 代理连接失败{where}：{_detail(exc)}。检查代理地址和端口是否正确、代理是否在运行"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return f"{name} 连接超时{where}：服务器连不上接口地址，国内服务器一般需要填代理"
+    if isinstance(exc, httpx.TimeoutException):
+        return f"{name} 请求超时{where}：已经连上但等太久没有返回，可以调大超时时间"
     if isinstance(exc, httpx.ConnectError):
-        return f"{name} 连接失败（服务器访问不到接口地址，可能需要代理）"
-    return f"{name} 出错：{type(exc).__name__}"
+        detail = _detail(exc)
+        hint = "域名解析失败，检查接口地址拼写" if "Name or service" in detail or "getaddrinfo" in detail \
+            else "服务器访问不到接口地址，国内服务器一般需要填代理"
+        return f"{name} 连接失败{where}：{hint}（{detail}）"
+    if isinstance(exc, httpx.UnsupportedProtocol):
+        return f"{name} 接口地址格式不对，需要以 http:// 或 https:// 开头"
+    return f"{name} 出错：{type(exc).__name__}：{_detail(exc)}"

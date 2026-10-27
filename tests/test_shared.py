@@ -267,9 +267,20 @@ def test_fish_audio(mock_http):
 
 
 def test_describe_exception():
+    req = httpx.Request("POST", "https://api.fish.audio/v1/tts")
     assert "超时" in http.describe_exception("X", httpx.ReadTimeout("t"))
     assert "代理" in http.describe_exception("X", httpx.ProxyError("p"))
     assert http.describe_exception("X", http.ServiceError("自定义")) == "自定义"
+    msg = http.describe_exception("Fish Audio", httpx.ConnectTimeout("timed out", request=req))
+    assert "https://api.fish.audio" in msg and "代理" in msg
+    msg = http.describe_exception("Fish Audio", httpx.ConnectError("[Errno -2] Name or service not known", request=req))
+    assert "域名解析失败" in msg and "Name or service" in msg
+
+
+def test_fish_api_root():
+    for url in ("https://api.fish.audio", "https://api.fish.audio/", "https://api.fish.audio/v1",
+                "https://api.fish.audio/v1/tts", " https://api.fish.audio/v1/ "):
+        assert fish_audio.api_root(url) == "https://api.fish.audio", url
 
 
 # ---------------------------------------------------------------- WebUI
