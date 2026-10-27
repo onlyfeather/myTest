@@ -55,6 +55,51 @@ def test_speakable_drama3_keeps_directions():
     assert speakable("[whisper]（小声）", keep_directions=True) == "", "directions alone are not speakable"
 
 
+def test_s2_models_keep_emotion_tags():
+    from mytest.plugins._shared.services import fish_audio
+
+    for model, _ in fish_audio.MODELS:
+        assert fish_audio.supports_directions(model), model
+    assert not fish_audio.supports_directions("s1")
+
+
+def test_singing_and_long_text_need_superuser(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import pytest
+
+    from mytest.plugins._shared.services import fish_audio
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins.tts_plugin import service
+
+    monkeypatch.setattr(service, "tts_settings", SimpleNamespace(
+        model="s2.1-pro", max_chars=10, superuser_max_chars=50, api_key="k", base_url="https://x",
+        reference_id="", format="mp3", speed=1.0, volume=0.0, proxy="", timeout=5.0,
+    ))
+    sent = []
+
+    async def fake_synthesize(text, **kwargs):
+        sent.append(text)
+        return b"mp3"
+
+    monkeypatch.setattr(fish_audio, "synthesize", fake_synthesize)
+
+    # 情感提示不计字数
+    assert service.spoken_length("[happy] 一二三四五 [break]") == 5
+    asyncio.run(service.synthesize("[happy] 一二三四五六七八九十"))
+    assert sent[-1] == "[happy] 一二三四五六七八九十"
+
+    with pytest.raises(ServiceError, match="唱歌"):
+        asyncio.run(service.synthesize("[singing] 啦啦啦"))
+    with pytest.raises(ServiceError, match="管理员"):
+        asyncio.run(service.synthesize("字" * 11))
+    asyncio.run(service.synthesize("[singing] 啦啦啦", superuser=True))
+    asyncio.run(service.synthesize("字" * 50, superuser=True))
+    with pytest.raises(ServiceError, match="50"):
+        asyncio.run(service.synthesize("字" * 51, superuser=True))
+
+
 def test_drama3_listed():
     from mytest.plugins._shared.services import fish_audio
 

@@ -130,8 +130,16 @@ DRAW_DESC = (
 )
 SELFIE_DESC = f"拍一张你自己（白鸟凛音）的自拍发到聊天里。对方想看你、要你的照片或自拍时调用。{ACT_IN_CHARACTER}"
 TTS_DESC = (
-    f"用语音说一句话发到聊天里。对方想听你的声音、让你用语音说时调用。{ACT_IN_CHARACTER}"
+    f"用语音说话发到聊天里。对方想听你的声音、让你用语音说、让你唱歌时调用。{ACT_IN_CHARACTER}"
+    "唱歌和大段的话（讲故事、念长段落）只有主人（管理员）能点，别人点时工具会拒绝，你婉拒即可。"
     "说完不要再用文字重复同一句话。"
+)
+TTS_TEXT_DESC = (
+    "要说的话，用你自己的口吻。平时一两句、不超过 100 字；主人要求时可以是大段的话或歌词。"
+    "要写情感标记：在句子开头用半角方括号写当时的语气，例如 [happy]、[sad]、[angry]、[whispering]、"
+    "[sighing]、[laughing]、[shy]、[impatient]，也可以写中文描述如 [冷淡又有点不耐烦]；"
+    "停顿用 [break]、[long-break]。每句最多 3 个标记，要贴合人设和当下心情，不要每句都一样。"
+    "唱歌时开头写 [singing]，后面是歌词。不要写（动作描写）、表情符号和波浪号"
 )
 DICE_DESC = "投骰子、做检定、抽签、帮忙随机决定时调用。点数由工具真随机产生并直接发到聊天里，你不能自己编点数，只需要点评。"
 PIXIV_DESC = "在 Pixiv 上找插画发到聊天里。对方想看某个角色、某类题材的图时调用。"
@@ -282,12 +290,14 @@ class RinneToolsPlugin(MaiBotPlugin):
         brief_description=TTS_DESC,
         parameters=[
             _msg_id_param(),
-            ToolParameterInfo(name="text", param_type=ToolParamType.STRING, description="要说的话，用你自己的口吻，一两句，不超过 100 字，不写动作描写", required=True),
+            ToolParameterInfo(name="text", param_type=ToolParamType.STRING, description=TTS_TEXT_DESC, required=True),
+            ToolParameterInfo(name="sing", param_type=ToolParamType.BOOLEAN, description="对方让你唱歌时设为 true",
+                              required=False, default=False),
         ],
         core_tool=True,
     )
-    async def rinne_voice(self, text: str = "", **kwargs: Any) -> dict[str, Any]:
-        return await self._call("tts", "tts", {"text": text}, kwargs)
+    async def rinne_voice(self, text: str = "", sing: bool = False, **kwargs: Any) -> dict[str, Any]:
+        return await self._call("tts", "tts", {"text": text, "sing": bool(sing) or None}, kwargs)
 
     @Tool(
         "rinne_dice",

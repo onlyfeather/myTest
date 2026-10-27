@@ -171,6 +171,32 @@ def test_dice_tool_sends_result_and_returns_numbers(sent):
         asyncio.run(TOOLS["dice"].run(ctx, {"faces": "abc"}))
 
 
+def test_tts_tool_singing_only_for_superuser(sent, monkeypatch):
+    from types import SimpleNamespace
+
+    import mytest.plugins.tools_api_plugin.tools as tools
+    from mytest.plugins.tts_plugin import service
+
+    monkeypatch.setattr(service, "tts_settings", SimpleNamespace(
+        enabled=True, api_key="k", max_chars=10, superuser_max_chars=50,
+    ))
+    monkeypatch.setattr(tools, "_is_superuser", lambda user_id: user_id == "1196477724")
+    spawned = []
+    monkeypatch.setattr(tools, "_spawn", lambda name, coro: (spawned.append(name), coro.close()))
+
+    guest = ToolContext("123456", "654321")
+    with pytest.raises(ToolError, match="唱歌"):
+        asyncio.run(tools.TOOLS["tts"].run(guest, {"text": "啦啦啦", "sing": True}))
+    with pytest.raises(ToolError, match="管理员"):
+        asyncio.run(tools.TOOLS["tts"].run(guest, {"text": "字" * 11}))
+    asyncio.run(tools.TOOLS["tts"].run(guest, {"text": "[happy] 晚安"}))
+
+    owner = ToolContext("1196477724", "654321")
+    asyncio.run(tools.TOOLS["tts"].run(owner, {"text": "啦啦啦", "sing": True}))
+    asyncio.run(tools.TOOLS["tts"].run(owner, {"text": "[calm] " + "字" * 50}))
+    assert spawned == ["tts", "tts", "tts"] and sent == []
+
+
 def test_draw_tool_validates_before_sending(sent):
     from mytest.plugins.tools_api_plugin.tools import TOOLS
 

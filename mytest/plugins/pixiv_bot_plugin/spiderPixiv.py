@@ -921,6 +921,42 @@ class PixivSpider:
             logger.debug(f"搜索图片异常: {e} ({reason})")
             return None
 
+    async def _simplify_illusts(
+        self,
+        illusts: List[Dict[str, Any]],
+        related_tags: List[str],
+        tag_translation: Dict[str, Dict[str, str]],
+    ) -> List[Dict[str, Any]]:
+        """去掉含屏蔽标签的作品，只保留需要的字段，缩略图地址换成反代。"""
+        simplified = []
+        blocked_count = 0
+        for illust in illusts:
+            if not isinstance(illust, dict) or not illust.get('id'):
+                continue
+            if await self._should_block_image_with_translation(illust.get('tags', []), related_tags, tag_translation):
+                blocked_count += 1
+                continue
+            simplified.append({
+                'id': illust.get('id'),
+                'title': illust.get('title'),
+                'url': self._replace_image_url(illust.get('url', '')),
+                'tags': illust.get('tags', []),
+                'userId': illust.get('userId'),
+                'userName': illust.get('userName'),
+                'pageCount': illust.get('pageCount', 1),
+                'width': illust.get('width'),
+                'height': illust.get('height'),
+                'illustType': illust.get('illustType'),
+                'xRestrict': illust.get('xRestrict', 0),
+                'description': illust.get('description', ''),
+                'createDate': illust.get('createDate'),
+                'aiType': illust.get('aiType', 0),
+                'profileImageUrl': illust.get('profileImageUrl', ''),
+            })
+        if blocked_count > 0:
+            logger.debug(f"Tag屏蔽: 过滤了 {blocked_count} 个包含屏蔽tag的作品")
+        return simplified
+
     async def _extract_simplified_data(self, raw_data: Dict[str, Any], search_keyword: str) -> Dict[str, Any]:
         """
         从原始API响应中提取精简的数据结构
@@ -953,46 +989,14 @@ class PixivSpider:
             body = raw_data['body']
             illust_manga = body.get('illustManga', {})
             
-            # 提取图片数据 - 只保留核心必要字段，并应用tag屏蔽
-            simplified_illusts = []
-            blocked_count = 0
-            
-            for illust in illust_manga.get('data', []):
-                # 检查是否包含屏蔽的tag（使用翻译增强检查，包括相关标签）
-                illust_tags = illust.get('tags', [])
-                related_tags = body.get('relatedTags', [])
-                tag_translation = body.get('tagTranslation', {})
-                
-                # 使用增强的标签屏蔽检查（包括相关标签和翻译）
-                if await self._should_block_image_with_translation(illust_tags, related_tags, tag_translation):
-                    blocked_count += 1
-                    continue
-                
-                simplified_illust = {
-                    # 🔴 核心必要数据
-                    'id': illust.get('id'),
-                    'title': illust.get('title'),
-                    'url': self._replace_image_url(illust.get('url', '')),  # 🔥 对缩略图URL也进行反代处理
-                    'tags': illust.get('tags', []),
-                    'userId': illust.get('userId'),
-                    'userName': illust.get('userName'),
-                    'pageCount': illust.get('pageCount', 1),
-                    'width': illust.get('width'),
-                    'height': illust.get('height'),
-                    'illustType': illust.get('illustType'),
-                    'xRestrict': illust.get('xRestrict', 0),
-                    
-                    # 🟡 重要数据
-                    'description': illust.get('description', ''),
-                    'createDate': illust.get('createDate'),
-                    'aiType': illust.get('aiType', 0),
-                    'profileImageUrl': illust.get('profileImageUrl', '')
-                }
-                simplified_illusts.append(simplified_illust)
-            
-            # 记录屏蔽统计
-            if blocked_count > 0:
-                logger.debug(f"Tag屏蔽: 过滤了 {blocked_count} 个包含屏蔽tag的作品")
+            related_tags = body.get('relatedTags', [])
+            tag_translation = body.get('tagTranslation', {})
+            popular = body.get('popular') or {}
+
+            # 热门列表也要过屏蔽标签：随机、热门模式和每日一图都会从这里取图
+            simplified_illusts = await self._simplify_illusts(illust_manga.get('data', []), related_tags, tag_translation)
+            popular_recent = await self._simplify_illusts(popular.get('recent') or [], related_tags, tag_translation)
+            popular_permanent = await self._simplify_illusts(popular.get('permanent') or [], related_tags, tag_translation)
             
             # 构建精简的数据结构
             simplified_data = {
@@ -1007,8 +1011,8 @@ class PixivSpider:
                 
                 # 🔥 热门推荐数据
                 'popular': {
-                    'recent': body.get('popular', {}).get('recent', []),
-                    'permanent': body.get('popular', {}).get('permanent', [])
+                    'recent': popular_recent,
+                    'permanent': popular_permanent
                 },
                 
                 # 搜索元信息

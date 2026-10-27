@@ -7,7 +7,7 @@
 |---|---|---|
 | `rinne_draw` | 对方请她画图 | 画图 → 发图 |
 | `rinne_selfie` | 对方想看她的自拍 | 按凛音想的情景 + 人设图画一张 |
-| `rinne_voice` | 对方想听她用语音说 | 合成语音发出 |
+| `rinne_voice` | 对方想听她用语音说、让她唱歌 | 合成语音发出（唱歌和大段语音只限 superuser） |
 | `rinne_dice` | 跑团检定、随机决定 | 真随机投骰，结果发到群里 |
 | `rinne_pixiv_search` / `rinne_pixiv_daily` | 对方想看某类插画 | Pixiv 搜图 / 每日推荐 |
 

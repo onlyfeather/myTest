@@ -225,19 +225,36 @@ async def tool_selfie(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------- 语音
 
 
-async def tool_tts(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    from ..tts_plugin.config import tts_settings
-    from ..tts_plugin.service import is_ready, synthesize
+def _is_superuser(user_id: str) -> bool:
+    from nonebot import get_driver
 
-    text = _text(args, "text", limit=int(tts_settings.max_chars))
+    superusers = get_driver().config.superusers
+    return user_id in superusers or f"onebot:{user_id}" in superusers
+
+
+async def tool_tts(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    from ..tts_plugin.service import char_limit, is_ready, is_singing, spoken_length, synthesize
+
+    superuser = _is_superuser(ctx.user_id)
+    limit = char_limit(superuser=superuser)
+    # [情感提示] 不计字数，原文留出余量，实际字数在下面按要读的字检查
+    text = _text(args, "text", limit=limit * 2 + 200)
     if not text:
         raise ToolError("缺少要说的话")
+    if args.get("sing") is True and not is_singing(text):
+        text = f"[singing] {text}"
+    if is_singing(text) and not superuser:
+        raise ToolError("唱歌只有主人（管理员）能点，其他人请用自己的话婉拒")
+    if spoken_length(text) > limit:
+        if superuser:
+            raise ToolError(f"太长了，最多 {limit} 个字，请缩短或分成几次说")
+        raise ToolError(f"太长了，最多 {limit} 个字；大段语音只有主人（管理员）能点，请缩短到一两句")
     if not is_ready():
         raise ToolError("语音功能没有开启或没有配置")
 
     async def job():
         try:
-            audio = await synthesize(text)
+            audio = await synthesize(text, superuser=superuser)
         except Exception as e:
             await send(ctx, f"嗓子不太舒服……{describe_exception('Fish Audio', e)}")
             return
@@ -358,7 +375,12 @@ TOOLS: dict[str, ToolSpec] = {
             tool_draw,
         ),
         ToolSpec("selfie", "凛音的自拍", {"scene": {"type": "string", "required": True}}, tool_selfie),
-        ToolSpec("tts", "用语音说一句话", {"text": {"type": "string", "required": True}}, tool_tts),
+        ToolSpec(
+            "tts",
+            "用语音说话或唱歌",
+            {"text": {"type": "string", "required": True}, "sing": {"type": "boolean"}},
+            tool_tts,
+        ),
         ToolSpec(
             "dice",
             "投骰子",

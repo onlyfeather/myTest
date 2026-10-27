@@ -6,6 +6,9 @@ from nonebot import logger
 
 from ..common import (
     BEAUTIFUL_THRESHOLDS,
+    DAILY_FALLBACK_MIN_BOOKMARKS,
+    DAILY_MAX_DETAILS,
+    DAILY_MAX_TAGS,
     DAILY_MIN_BOOKMARKS,
     LATEST_MIN_BOOKMARKS,
     RANDOM_MIN_BOOKMARKS,
@@ -221,34 +224,42 @@ async def hot_images(spider, tags: str, count: int) -> ImageResult:
     return ImageResult(True, "", images=images, title=f"热门推荐「{tags}」")
 
 
+# 每日一图当天选定后记住，同一个人一天内再要还是同一张，也不用再请求 Pixiv。重启后会重新选。
+_daily_cache: dict[tuple[str, str], ImageResult] = {}
+# 和 spiderPixiv.get_daily_seed 一样按北京时间换日
+DAILY_TIMEZONE = timezone(timedelta(hours=8))
+
+
 async def daily_recommend(spider, user_id: str) -> ImageResult:
-    daily_result = await _get_daily_recommend(spider, user_id, max_attempts=20, min_bookmarks=DAILY_MIN_BOOKMARKS)
+    today = datetime.now(DAILY_TIMEZONE).strftime("%Y%m%d")
+    key = (today, user_id or "anonymous")
+    if key in _daily_cache:
+        return _daily_cache[key]
+    for old in [k for k in _daily_cache if k[0] != today]:
+        del _daily_cache[old]
+
+    daily_result = await _get_daily_recommend(spider, user_id, min_bookmarks=DAILY_MIN_BOOKMARKS)
 
     if not daily_result:
-        return ImageResult(False, f"获取今日推荐失败：没有找到收藏>{DAILY_MIN_BOOKMARKS}的可用作品，请稍后再试或增加喜好标签。")
+        if not spider.preferred_tags:
+            return ImageResult(False, "获取今日推荐失败：还没有喜好标签，请先用「p站 偏好 喜欢 标签」添加。")
+        return ImageResult(
+            False,
+            pixiv_failure_message(
+                spider,
+                "今日推荐",
+                "、".join(sorted(spider.preferred_tags)[:5]),
+                f"喜好标签里没有收藏>{DAILY_FALLBACK_MIN_BOOKMARKS} 的作品，可以添加更常见的日文标签，例如 風景、オリジナル。",
+            ),
+        )
 
-    image = daily_result.get("image")
+    image = daily_result["image"]
     tag = daily_result.get("tag", "今日推荐")
-    if not image:
-        return ImageResult(False, "图片信息获取失败")
+    image["urls"] = await spider.get_illust_original_urls(image["id"]) or [image.get("url", "")]
 
-    image_id = image.get("id")
-    if image_id:
-        original_urls = await spider.get_illust_original_urls(image_id)
-        if original_urls:
-            image["urls"] = original_urls
-            logger.debug(f"每日一图已获取原图: {len(original_urls)} 个URL")
-        else:
-            thumbnail_url = image.get("url", "")
-            if thumbnail_url:
-                image["urls"] = [thumbnail_url]
-                logger.debug("每日一图获取原图失败，使用缩略图备用")
-            else:
-                logger.debug("每日一图无法获取任何图片URL")
-    else:
-        logger.debug("每日一图图片ID为空")
-
-    return ImageResult(True, "", images=[image], title=f"📅 今日推荐「{tag}」")
+    result = ImageResult(True, "", images=[image], title=f"📅 今日推荐「{tag}」")
+    _daily_cache[key] = result
+    return result
 
 
 async def _select_search_images(
@@ -361,54 +372,60 @@ async def _get_daily_recommend(
     spider,
     user_id: str,
     *,
-    max_attempts: int = 5,
-    min_bookmarks: int = 100,
+    max_tags: int = DAILY_MAX_TAGS,
+    max_details: int = DAILY_MAX_DETAILS,
+    min_bookmarks: int = DAILY_MIN_BOOKMARKS,
+    fallback_min_bookmarks: int = DAILY_FALLBACK_MIN_BOOKMARKS,
 ) -> Optional[dict]:
-    available_tags = list(spider.preferred_tags)
+    """按每人每天固定的种子轮流试喜好标签，挑第一张收藏>min_bookmarks 的作品。
+
+    都不够时，选看过的作品里收藏最高、且超过 fallback_min_bookmarks 的那张。
+    """
+    # 排序后再按种子轮转，集合本身的顺序每次启动都不同，否则同一天重启后会换图
+    available_tags = sorted(spider.preferred_tags)
     if not available_tags:
         return None
 
     seed = spider.get_daily_seed(user_id or "anonymous")
     start_index = seed % len(available_tags)
-    ordered_tags = available_tags[start_index:] + available_tags[:start_index]
-    attempted_tags = []
+    ordered_tags = (available_tags[start_index:] + available_tags[:start_index])[:max_tags]
+    best: Optional[tuple[int, str, dict]] = None
+    details_checked = 0
 
-    for selected_tag in ordered_tags[:max_attempts]:
-        if selected_tag in attempted_tags:
+    for selected_tag in ordered_tags:
+        if details_checked >= max_details:
             break
-        attempted_tags.append(selected_tag)
-
         search_result = await spider.search_illustrations(selected_tag)
         if not search_result:
             continue
 
-        popular_images = search_result.get("popular", {}).get("recent", [])
-        if not popular_images:
+        # 热门列表优先；Pixiv 不给热门（冷门或中文标签常见）时用普通结果
+        popular = search_result.get("popular", {})
+        candidates = (popular.get("recent") or []) + (popular.get("permanent") or [])
+        if not candidates:
+            candidates = search_result.get("illusts", []) or []
+        candidates = list({c["id"]: c for c in candidates if c.get("id")}.values())
+        if not candidates:
             continue
 
-        offset = seed % len(popular_images)
-        ordered_images = popular_images[offset:] + popular_images[:offset]
-        for selected_image in ordered_images:
-            illust_id = selected_image.get("id")
-            if not illust_id:
-                continue
-
-            illust_details = await spider.get_illust_details(illust_id)
-            quality_score = spider.calculate_quality_score(illust_details) if illust_details else None
+        offset = seed % len(candidates)
+        for selected_image in candidates[offset:] + candidates[:offset]:
+            if details_checked >= max_details:
+                break
+            details_checked += 1
+            illust_details = await spider.get_illust_details(selected_image["id"])
             bookmark_count = int(illust_details.get("bookmarkCount", 0) or 0) if illust_details else 0
-            if bookmark_count <= min_bookmarks:
+            if bookmark_count <= fallback_min_bookmarks:
                 continue
-
             selected_image["bookmarkCount"] = bookmark_count
-            return {
-                "user_qq": user_id,
-                "tag": selected_tag,
-                "image": selected_image,
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "available_tags_count": len(available_tags),
-                "available_images_count": len(popular_images),
-                "attempted_tags": attempted_tags,
-                "quality_score": quality_score,
-            }
+            if bookmark_count > min_bookmarks:
+                return {"tag": selected_tag, "image": selected_image}
+            if best is None or bookmark_count > best[0]:
+                best = (bookmark_count, selected_tag, selected_image)
 
+    if best is not None:
+        logger.debug(f"每日一图没有收藏>{min_bookmarks} 的作品，改用收藏 {best[0]} 的作品")
+        return {"tag": best[1], "image": best[2]}
+    if spider.last_error_reason is None:
+        spider.last_error_reason = "no_qualified_images"
     return None

@@ -11,7 +11,7 @@ from .._shared.limits import UsageLimiter, scope_allowed
 from .._shared.phrases import pick
 from .._shared.services.http import describe_exception
 from .config import tts_settings
-from .service import synthesize
+from .service import is_singing, synthesize
 
 limiter = UsageLimiter()
 
@@ -34,11 +34,14 @@ async def handle_say(bot: Bot, event: Event, matcher: Matcher, groups: tuple = R
         await matcher.finish("用法：/说 要朗读的文字")
 
     user_id = event.get_user_id()
+    superuser = await is_superuser(bot, event)
+    if not superuser and is_singing(text):
+        await matcher.finish("唱歌只有管理员可以用。")
     reason = await limiter.try_acquire(
         user_id,
         cooldown=float(tts_settings.cooldown),
         max_concurrent=3,
-        exempt=await is_superuser(bot, event),
+        exempt=superuser,
     )
     if reason:
         await matcher.finish(reason)
@@ -46,7 +49,7 @@ async def handle_say(bot: Bot, event: Event, matcher: Matcher, groups: tuple = R
     success = False
     try:
         await matcher.send(pick("tts"))
-        audio = await synthesize(text)
+        audio = await synthesize(text, superuser=superuser)
         success = True
     except Exception as e:
         logger.opt(exception=e).warning("[语音] 合成失败")
