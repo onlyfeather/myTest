@@ -102,9 +102,16 @@ def create_router(
     *,
     prefix: str = "/webui",
     secure_cookie: Callable[[], bool] = lambda: False,
+    disabled_reason: Callable[[], str] | None = None,
     guard: LoginGuard | None = None,
     sessions: Sessions | None = None,
 ) -> APIRouter:
+    def reason() -> str:
+        if password():
+            return ""
+        text = disabled_reason() if disabled_reason else ""
+        return text or "WebUI 未启用：请先在 .env 里设置 WEBUI_PASSWORD"
+
     guard = guard or LoginGuard()
     sessions = sessions or Sessions()
     router = APIRouter(prefix=prefix)
@@ -137,7 +144,9 @@ def create_router(
 
     @router.get("/api/session", include_in_schema=False)
     async def session(request: Request) -> JSONResponse:
-        return JSONResponse({"ok": True, "logged_in": authed(request), "enabled": bool(password())})
+        return JSONResponse(
+            {"ok": True, "logged_in": authed(request), "enabled": bool(password()), "reason": reason()}
+        )
 
     @router.post("/api/login", include_in_schema=False)
     async def login(request: Request) -> Response:
@@ -145,7 +154,7 @@ def create_router(
             return error(403, "请求来源不正确")
         expected = password()
         if not expected:
-            return error(503, "WebUI 未启用：请先在 .env 里设置 WEBUI_PASSWORD")
+            return error(503, reason())
         ip = _client_ip(request)
         wait = guard.blocked_for(ip)
         if wait:

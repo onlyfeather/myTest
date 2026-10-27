@@ -305,5 +305,6 @@ def test_webui_lockout_and_disabled(tmp_path):
     assert r.status_code == 429, "locked after 5 failures, even with the right password"
 
     disabled, _ = make_app(tmp_path / "d", password="")
-    assert disabled.get("/webui/api/session").json()["enabled"] is False
+    session = disabled.get("/webui/api/session").json()
+    assert session["enabled"] is False and "WEBUI_PASSWORD" in session["reason"]
     assert disabled.post("/webui/api/login", json={"password": ""}, headers=HEAD).status_code == 503

@@ -416,7 +416,7 @@ window.addEventListener("beforeunload", (e) => { if (dirty()) { e.preventDefault
 (async () => {
   const r = await api("/session").catch(() => null);
   if (!r) return renderLogin("无法连接服务器");
-  if (!r.enabled) return renderLogin("WebUI 未启用：请在 .env 里设置 WEBUI_PASSWORD 后重启");
+  if (!r.enabled) return renderLogin(r.reason || "WebUI 未启用：请在 .env 里设置 WEBUI_PASSWORD 后重启");
   if (r.logged_in) return load();
   renderLogin();
 })();
