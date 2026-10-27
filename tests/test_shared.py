@@ -297,6 +297,77 @@ def test_webui_requires_login_and_hides_secrets(tmp_path):
     assert client.get("/webui/api/settings").status_code == 401
 
 
+def test_fetch_options(tmp_path):
+    store = SettingsStore(tmp_path / "s.json", env_lookup=lambda name: None)
+    store.register(SettingSection(id="x", title="X", fields=[
+        SettingField("model", "模型", fetchable=True), SettingField("plain", "普通"),
+    ]))
+
+    async def provider():
+        return [("b", "B"), ("a", ""), ("b", "dup"), (" ", "blank")]
+
+    with pytest.raises(ValueError):
+        store.set_options_provider("x", "plain", provider)
+    fields = {f["key"]: f for f in store.describe()[0]["fields"]}
+    assert fields["model"]["fetchable"] is False, "no provider registered yet"
+    store.set_options_provider("x", "model", provider)
+    assert {f["key"]: f for f in store.describe()[0]["fields"]}["model"]["fetchable"] is True
+    assert asyncio.run(store.fetch_options("x", "model")) == [{"value": "b", "label": "B"}, {"value": "a", "label": "a"}]
+    with pytest.raises(KeyError):
+        asyncio.run(store.fetch_options("x", "plain"))
+
+
+def test_model_list_services(mock_http, monkeypatch):
+    from mytest.plugins._shared.services import model_list
+
+    calls, responder = mock_http
+    monkeypatch.setattr(model_list, "http_client", novelai.http_client)
+    responder["fn"] = lambda req: httpx.Response(200, json={"data": [
+        {"id": "text-embedding-3"}, {"id": "gpt-4o"}, {"id": "gpt-image-2.5-flare"}, {"id": "deepseek-chat"},
+    ]})
+    ids = asyncio.run(model_list.openai_models("大模型", api_key="sk", base_url="https://x/v1/"))
+    assert str(calls[0].url) == "https://x/v1/models"
+    assert [m for m, _ in model_list.chat_first(ids)][:2] == ["deepseek-chat", "gpt-4o"]
+    assert model_list.image_only(ids) == [("gpt-image-2.5-flare", "gpt-image-2.5-flare")]
+    assert len(model_list.image_only(["a", "b"])) == 2, "falls back to all when nothing looks like an image model"
+    with pytest.raises(http.ServiceError, match="API Key"):
+        asyncio.run(model_list.openai_models("大模型", api_key="", base_url="https://x/v1"))
+    responder["fn"] = lambda req: httpx.Response(200, text="<html>")
+    with pytest.raises(http.ServiceError, match="/v1"):
+        asyncio.run(model_list.openai_models("大模型", api_key="sk", base_url="https://x"))
+
+    def fish(req):
+        if req.url.params.get("self") == "true":
+            return httpx.Response(200, json={"items": [{"_id": "mine1", "title": "凛音"}]})
+        return httpx.Response(200, json={"items": [{"_id": "pub1", "title": ""}, {"title": "no id"}]})
+
+    responder["fn"] = fish
+    voices = asyncio.run(model_list.fish_voices(api_key="k", base_url="https://api.fish.audio"))
+    assert voices == [("mine1", "我的 · 凛音"), ("pub1", "热门 · 未命名")]
+    assert calls[-1].url.path == "/model" and calls[-1].headers["authorization"] == "Bearer k"
+
+
+def test_webui_options_endpoint(tmp_path):
+    client, store = make_app(tmp_path)
+    store._sections["demo"].fields.append(SettingField("voice", "音色", fetchable=True))
+
+    async def voices():
+        return [("v1", "音色一")]
+
+    async def broken():
+        raise http.ServiceError("接口挂了")
+
+    store.set_options_provider("demo", "voice", voices)
+    url = "/webui/api/settings/demo/options/voice"
+    assert client.post(url, headers=HEAD).status_code == 401
+    client.post("/webui/api/login", json={"password": "correct-horse-battery"}, headers=HEAD)
+    assert client.post(url).status_code == 403
+    assert client.post(url, headers=HEAD).json() == {"ok": True, "options": [{"value": "v1", "label": "音色一"}]}
+    assert client.post("/webui/api/settings/demo/options/model", headers=HEAD).status_code == 404
+    store.set_options_provider("demo", "voice", broken)
+    assert client.post(url, headers=HEAD).json() == {"ok": False, "message": "接口挂了"}
+
+
 def test_webui_lockout_and_disabled(tmp_path):
     client, _ = make_app(tmp_path)
     for _ in range(5):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .._shared.services import fish_audio
+from .._shared.services import fish_audio, model_list
 from .._shared.services.http import ServiceError
 from .config import tts_settings
 
@@ -42,6 +42,11 @@ async def synthesize(text: str) -> bytes:
         proxy=str(s.proxy),
         timeout=float(s.timeout),
     )
+
+
+async def list_voices() -> list[tuple[str, str]]:
+    s = tts_settings
+    return await model_list.fish_voices(api_key=str(s.api_key), base_url=str(s.base_url), proxy=str(s.proxy))
 
 
 async def test_tts() -> str:

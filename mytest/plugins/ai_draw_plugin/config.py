@@ -98,8 +98,9 @@ gpt_image_settings = register(
             SettingField("api_key", "API Key", type="secret", env=("gpt_image_api_key",)),
             SettingField("base_url", "接口地址", default="https://api.openai.com/v1",
                          help="填到 /v1 为止；官方接口需要先完成组织验证"),
-            SettingField("model", "模型", default="gpt-image-2.5-flare",
-                         help="可选：" + "、".join(m for m, _ in gpt_image.MODELS) + "，中转站的模型名可能不同"),
+            SettingField("model", "模型", default="gpt-image-2.5-flare", fetchable=True,
+                         help="点「获取列表」读取接口上的图片模型；官方可选 "
+                         + "、".join(m for m, _ in gpt_image.MODELS)),
             SettingField("quality", "质量", type="select", default="auto", options=gpt_image.QUALITIES),
             SettingField(
                 "moderation",

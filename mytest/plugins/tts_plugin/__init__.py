@@ -2,9 +2,10 @@ from nonebot.plugin import PluginMetadata
 
 from .._shared.settings import settings_store
 from . import handlers as handlers
-from .service import test_tts
+from .service import list_voices, test_tts
 
 settings_store.set_tester("tts", test_tts)
+settings_store.set_options_provider("tts", "reference_id", list_voices)
 
 __plugin_meta__ = PluginMetadata(
     name="tts",

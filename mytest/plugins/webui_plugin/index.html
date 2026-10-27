@@ -88,6 +88,13 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 textarea { min-height: 84px; resize: vertical; }
 .invalid input, .invalid textarea, .invalid select { border-color: var(--danger); }
 .inline { display: flex; gap: 8px; align-items: center; }
+.stack { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.stack > * { width: 100%; }
+.stack > .link { width: auto; }
+input[type=search] {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+}
+input[type=search]:focus { outline: none; border-color: var(--accent); background: var(--panel); }
 .link { all: unset; color: var(--accent); cursor: pointer; font-size: 12.5px; }
 .link:hover { text-decoration: underline; }
 .link:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
@@ -284,12 +291,66 @@ function control(f) {
     } }, "显示");
     return h("div", { class: "inline" }, input, toggle);
   }
+  if (f.fetchable) return fetchableControl(f, common, value);
   const numeric = f.type === "int" || f.type === "float";
   return h("input", {
     ...common, type: numeric ? "number" : "text", value: value ?? "", placeholder: f.placeholder || null,
     step: f.type === "int" ? "1" : (numeric ? "any" : null), min: f.min, max: f.max,
     spellcheck: "false", oninput: (e) => setDraft(f, e.target.value),
   });
+}
+
+/* 可从接口获取选项的配置项：获取到列表后用下拉框选择，也可以切回手动输入。 */
+const fetched = {}; // "分区.配置项" → [{value, label}]
+const manual = new Set(); // 用户选择手动输入的配置项
+
+function fetchableControl(f, common, value) {
+  const cacheKey = state.current + "." + f.key;
+  const options = fetched[cacheKey];
+  const current = value ?? "";
+  const btn = h("button", { class: "btn", type: "button", onclick: async () => {
+    if (dirty()) return toast("请先保存修改（比如 API Key、接口地址），再获取列表", false);
+    btn.disabled = true; btn.textContent = "获取中…";
+    try {
+      const r = await api(`/settings/${encodeURIComponent(state.current)}/options/${encodeURIComponent(f.key)}`, { method: "POST" });
+      if (!r.ok) return toast(r.message || "获取失败", false);
+      fetched[cacheKey] = r.options;
+      manual.delete(cacheKey);
+      toast(`获取到 ${r.options.length} 个选项`);
+      renderMain(); updateChrome();
+      document.getElementById(common.id)?.focus();
+    } catch (e) { /* 已处理 */ } finally { btn.disabled = false; btn.textContent = options ? "刷新列表" : "获取列表"; }
+  } }, options ? "刷新列表" : "获取列表");
+
+  if (!options || manual.has(cacheKey)) {
+    const input = h("input", {
+      ...common, type: "text", value: current, placeholder: f.placeholder || null, spellcheck: "false",
+      oninput: (e) => setDraft(f, e.target.value),
+    });
+    const back = options ? h("button", { class: "btn", type: "button", onclick: () => {
+      manual.delete(cacheKey); renderMain(); updateChrome();
+    } }, "从列表选") : null;
+    return h("div", { class: "inline" }, input, back || btn);
+  }
+
+  // 当前值不在列表里时保留它，避免一打开就被换掉。
+  const list = options.some((o) => o.value === current) || !current
+    ? options : [{ value: current, label: current + "（当前值，不在列表中）" }, ...options];
+  const search = h("input", {
+    type: "search", placeholder: `搜索 ${options.length} 个选项`, "aria-label": "筛选 " + f.label, spellcheck: "false",
+    oninput: (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      for (const opt of select.options) opt.hidden = !!q && !opt.textContent.toLowerCase().includes(q) && opt.value !== select.value;
+    },
+  });
+  const select = h("select", { ...common, onchange: (e) => setDraft(f, e.target.value) },
+    !current ? h("option", { value: "", selected: true }, f.key === "reference_id" ? "默认音色" : "请选择") : null,
+    f.key === "reference_id" && current ? h("option", { value: "" }, "默认音色") : null,
+    list.map((o) => h("option", { value: o.value, selected: o.value === current }, o.label)));
+  return h("div", { class: "stack" },
+    h("div", { class: "inline" }, search, btn),
+    select,
+    h("button", { class: "link", type: "button", onclick: () => { manual.add(cacheKey); renderMain(); updateChrome(); } }, "手动输入"));
 }
 
 function fieldRow(f) {

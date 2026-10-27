@@ -220,6 +220,22 @@ def create_router(
         section = next(s for s in store.describe() if s["id"] == section_id)
         return JSONResponse({"ok": True, "section": section})
 
+    @router.post("/api/settings/{section_id}/options/{key}", include_in_schema=False)
+    async def fetch_options(section_id: str, key: str, request: Request) -> JSONResponse:
+        # 用 POST：会用保存的密钥去请求外部接口，不应该被随便触发。
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        title = next((s.title for s in store.sections() if s.id == section_id), section_id)
+        try:
+            options = await store.fetch_options(section_id, key)
+        except KeyError:
+            return error(404, "这个配置项不支持获取列表")
+        except Exception as e:
+            return JSONResponse({"ok": False, "message": describe_exception(title, e)})
+        return JSONResponse({"ok": True, "options": options})
+
     @router.post("/api/settings/{section_id}/test", include_in_schema=False)
     async def test_section(section_id: str, request: Request) -> JSONResponse:
         if not authed(request):

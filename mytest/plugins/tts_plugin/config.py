@@ -16,9 +16,10 @@ tts_settings = register(
             SettingField("model", "模型", type="select", default="s2.1-pro", options=fish_audio.MODELS),
             SettingField(
                 "reference_id",
-                "音色 ID",
+                "音色",
                 default="",
-                help="Fish Audio 音色页地址最后那串 ID；留空使用默认音色",
+                fetchable=True,
+                help="点「获取列表」选择自己的音色或热门中文音色；也可以粘贴音色页地址最后那串 ID。留空使用默认音色",
             ),
             SettingField("speed", "语速", type="float", default=1.0, minimum=0.5, maximum=2.0),
             SettingField("volume", "音量增益（dB）", type="float", default=0.0, minimum=-20, maximum=20),

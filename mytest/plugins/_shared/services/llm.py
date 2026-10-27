@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..settings import llm_settings
-
+from . import model_list
 from .http import ServiceError, describe_http_error, http_client
 
 NAME = "大模型"
@@ -56,6 +56,13 @@ async def chat(
     if resp.status_code != 200:
         raise ServiceError(describe_http_error(NAME, resp))
     return extract_content(resp.json())
+
+
+async def list_models() -> list[tuple[str, str]]:
+    ids = await model_list.openai_models(
+        NAME, api_key=str(llm_settings.api_key), base_url=str(llm_settings.base_url), proxy=str(llm_settings.proxy)
+    )
+    return model_list.chat_first(ids)
 
 
 async def test_connection() -> str:

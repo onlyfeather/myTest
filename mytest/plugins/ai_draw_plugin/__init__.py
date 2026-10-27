@@ -2,10 +2,11 @@ from nonebot.plugin import PluginMetadata
 
 from .._shared.settings import settings_store
 from . import handlers as handlers
-from .service import test_gpt_image, test_novelai
+from .service import list_gpt_image_models, test_gpt_image, test_novelai
 
 settings_store.set_tester("novelai", test_novelai)
 settings_store.set_tester("gpt_image", test_gpt_image)
+settings_store.set_options_provider("gpt_image", "model", list_gpt_image_models)
 
 __plugin_meta__ = PluginMetadata(
     name="ai_draw",

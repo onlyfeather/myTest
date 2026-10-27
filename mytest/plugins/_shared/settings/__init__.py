@@ -70,7 +70,9 @@ llm_settings = register(
                 "model",
                 "模型",
                 default="gpt-4o-mini",
+                help="保存 API Key 和接口地址后，点「获取列表」从接口读取可用模型",
                 env=("dice_girl_ai_model", "ai_model", "openai_model"),
+                fetchable=True,
             ),
             SettingField(
                 "timeout",

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from nonebot import logger
 
-from .._shared.services import gpt_image, novelai
+from .._shared.services import gpt_image, model_list, novelai
 from .._shared.services.http import ServiceError
 from .config import draw_settings, gpt_image_settings, novelai_settings
 from .prompting import DrawRequest, has_chinese, join_prompt, to_novelai_tags
@@ -69,6 +69,14 @@ async def draw(provider: str, req: DrawRequest) -> DrawResult:
     if provider == "gpt":
         return await draw_gpt(req)
     raise ServiceError(f"未知的画图后端：{provider}")
+
+
+async def list_gpt_image_models() -> list[tuple[str, str]]:
+    s = gpt_image_settings
+    ids = await model_list.openai_models(
+        "GPT Image", api_key=str(s.api_key), base_url=str(s.base_url), proxy=str(draw_settings.proxy)
+    )
+    return model_list.image_only(ids)
 
 
 async def test_novelai() -> str:

@@ -11,7 +11,7 @@ from nonebot import get_app, get_driver, logger
 from nonebot.drivers import ASGIMixin
 from nonebot.plugin import PluginMetadata
 
-from .._shared.services.llm import test_connection
+from .._shared.services.llm import list_models, test_connection
 from .._shared.settings import settings_store
 from .server import create_router
 
@@ -25,6 +25,7 @@ __plugin_meta__ = PluginMetadata(
 MIN_PASSWORD_LENGTH = 12
 
 settings_store.set_tester("llm", test_connection)
+settings_store.set_options_provider("llm", "model", list_models)
 
 
 def _config_value(name: str) -> str:

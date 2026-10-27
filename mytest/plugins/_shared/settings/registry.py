@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 FIELD_TYPES = {"text", "secret", "textarea", "lines", "bool", "int", "float", "select"}
+OptionsProvider = Callable[[], Awaitable[list[tuple[str, str]]]]
+MAX_FETCHED_OPTIONS = 500
 _TRUE_WORDS = {"1", "true", "yes", "on", "开", "开启", "启用"}
 _FALSE_WORDS = {"0", "false", "no", "off", "关", "关闭", "停用", ""}
 
@@ -34,6 +36,8 @@ class SettingField:
     maximum: float | None = None
     group: str = ""
     placeholder: str = ""
+    # 为 True 时 WebUI 显示「获取列表」按钮，可选项由 set_options_provider 注册的函数提供。
+    fetchable: bool = False
 
     def __post_init__(self) -> None:
         if self.type not in FIELD_TYPES:
@@ -49,6 +53,8 @@ class SettingSection:
     order: int = 100
     # 「测试连接」按钮调用的函数：成功返回说明文字，失败抛异常。
     tester: Callable[[], Awaitable[str]] | None = None
+    # 配置项 → 获取可选值的函数，返回 [(值, 显示文字)]，失败抛异常。
+    option_providers: dict[str, OptionsProvider] = field(default_factory=dict)
 
     def get_field(self, key: str) -> SettingField:
         for item in self.fields:
@@ -169,6 +175,29 @@ class SettingsStore:
         with self._lock:
             self._sections[section_id].tester = tester
 
+    def set_options_provider(self, section_id: str, key: str, provider: OptionsProvider) -> None:
+        with self._lock:
+            section = self._sections[section_id]
+            if not section.get_field(key).fetchable:
+                raise ValueError(f"{section_id}.{key} 没有标记为 fetchable")
+            section.option_providers[key] = provider
+
+    async def fetch_options(self, section_id: str, key: str) -> list[dict[str, str]]:
+        section = self._sections.get(section_id)
+        provider = section.option_providers.get(key) if section else None
+        if provider is None:
+            raise KeyError(f"{section_id}.{key} 不支持获取列表")
+        seen: set[str] = set()
+        result = []
+        for value, label in await provider():
+            value = str(value).strip()
+            if value and value not in seen:
+                seen.add(value)
+                result.append({"value": value, "label": str(label or value)})
+            if len(result) >= MAX_FETCHED_OPTIONS:
+                break
+        return result
+
     async def run_test(self, section_id: str) -> str:
         section = self._sections.get(section_id)
         if section is None or section.tester is None:
@@ -279,6 +308,7 @@ class SettingsStore:
                     "max": spec.maximum,
                     "source": source,
                     "env": list(spec.env),
+                    "fetchable": spec.key in section.option_providers,
                 }
                 if spec.type == "secret":
                     # 密钥永远不发给浏览器，只告诉前端有没有设置。
