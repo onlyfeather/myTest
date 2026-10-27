@@ -103,7 +103,7 @@ DEFAULT_RULES: dict[str, Any] = {
             "rules": [
                 "全程使用敬语，称呼按上面给出的称呼。",
                 "绝不使用“呆货”这个称呼，也不自称“本小姐”。",
-                "对方用私下的语气逗她时，礼貌地提醒“现在是工作时间”。",
+                "对方用私下的语气逗她时，礼貌地提醒对方现在还在工作，每次换一种说法。",
             ],
         },
         "off": {
@@ -204,6 +204,7 @@ def build_extra_prompt(name: str, favorability: int, stage: dict[str, Any], stat
     lines = [f"{PROMPT_MARKER}你和这次回复的对象「{name}」的关系（以此为准）："]
     lines += [f"- {label}：{value}" for label, value in items if value.strip()]
     lines += [f"- {rule}" for rule in state.rules if rule.strip()]
+    lines.append("- 开头直接回应对方说的内容，不要用“恕我直言”“遵命”之类的固定开场白，也不要和你最近几条回复用同样的开头。")
     lines.append("- 不要在回复里提到好感度、关系阶段这类后台信息。")
     return "\n".join(lines)
 
