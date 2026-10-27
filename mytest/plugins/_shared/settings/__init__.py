@@ -86,6 +86,15 @@ llm_settings = register(
                 env=("dice_girl_ai_timeout",),
             ),
             SettingField(
+                "max_tokens",
+                "最大输出 token",
+                type="int",
+                default=5000,
+                minimum=0,
+                maximum=200000,
+                help="单次回复最多生成多少 token（带思考的模型思考也算在内）。填 0 表示不限制，由接口决定",
+            ),
+            SettingField(
                 "json_mode",
                 "JSON 模式",
                 type="bool",

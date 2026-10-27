@@ -206,7 +206,7 @@ def test_draw_tool_validates_before_sending(sent):
     with pytest.raises(ToolError, match="size"):
         asyncio.run(TOOLS["draw"].run(ctx, {"prompt": "猫", "size": "巨图"}))
     with pytest.raises(ToolError, match="太长"):
-        asyncio.run(TOOLS["draw"].run(ctx, {"prompt": "猫" * 600}))
+        asyncio.run(TOOLS["draw"].run(ctx, {"prompt": "猫" * 5001}))
     assert sent == [], "nothing is sent when arguments are invalid"
 
 

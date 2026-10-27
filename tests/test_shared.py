@@ -411,6 +411,26 @@ def test_model_list_services(mock_http, monkeypatch):
         asyncio.run(model_list.fish_voices(api_key=" ", base_url="https://api.fish.audio"))
 
 
+def test_llm_chat_max_tokens(mock_http, monkeypatch):
+    from types import SimpleNamespace
+
+    from mytest.plugins._shared.services import llm
+
+    calls, responder = mock_http
+    monkeypatch.setattr(llm, "http_client", novelai.http_client)
+    settings = SimpleNamespace(api_key="sk", base_url="https://x/v1", model="m", proxy="", timeout=5.0, max_tokens=5000)
+    monkeypatch.setattr(llm, "llm_settings", settings)
+    responder["fn"] = lambda req: httpx.Response(200, json={"choices": [{"message": {"content": "好"}}]})
+
+    assert asyncio.run(llm.chat([{"role": "user", "content": "hi"}])) == "好"
+    assert json.loads(calls[-1].content)["max_tokens"] == 5000, "defaults to the WebUI setting"
+    asyncio.run(llm.chat([], max_tokens=10))
+    assert json.loads(calls[-1].content)["max_tokens"] == 10
+    settings.max_tokens = 0
+    asyncio.run(llm.chat([]))
+    assert "max_tokens" not in json.loads(calls[-1].content), "0 means no limit"
+
+
 def test_webui_options_endpoint(tmp_path):
     client, store = make_app(tmp_path)
     store._sections["demo"].fields.append(SettingField("voice", "音色", fetchable=True))

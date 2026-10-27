@@ -100,11 +100,10 @@ def clean_tags(text: str) -> str:
 
 
 async def to_novelai_tags(prompt: str) -> str:
+    # max_tokens 用「大模型」里的设置：带思考的模型会先把 token 花在思考上，给太少时正文是空的
     reply = await llm.chat(
         [{"role": "system", "content": TRANSLATE_PROMPT}, {"role": "user", "content": prompt}],
         temperature=0.3,
-        # 带思考的模型会先把 token 花在思考上，给太少时正文是空的
-        max_tokens=2000,
     )
     tags = clean_tags(reply)
     if not tags:

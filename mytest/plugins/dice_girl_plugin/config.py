@@ -53,6 +53,10 @@ class _Config:
         return float(llm_settings.timeout)
 
     @property
+    def ai_max_tokens(self) -> int:
+        return int(llm_settings.max_tokens)
+
+    @property
     def ai_json_mode(self) -> bool:
         return bool(llm_settings.json_mode)
 

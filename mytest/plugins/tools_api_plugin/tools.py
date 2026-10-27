@@ -21,7 +21,7 @@ from .._shared import qq_images
 from .._shared.services.http import describe_exception
 
 _ID = re.compile(r"^\d{5,12}$")
-MAX_TEXT = 500
+MAX_TEXT = 5000
 
 # 后台任务的引用，防止被垃圾回收。
 _background: set[asyncio.Task] = set()
@@ -203,7 +203,7 @@ async def tool_draw(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 async def tool_selfie(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     from .selfie import selfie_ready, take_selfie
 
-    scene = _text(args, "scene", limit=300)
+    scene = _text(args, "scene")
     if not scene:
         raise ToolError("缺少自拍的情景描述")
     if reason := selfie_ready():

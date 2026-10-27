@@ -10,6 +10,8 @@ def build_json_payload(model: str, messages: list, temperature: float) -> dict:
         "messages": messages,
         "temperature": temperature,
     }
+    if config.ai_max_tokens:
+        payload["max_tokens"] = config.ai_max_tokens
     if config.ai_json_mode:
         payload["response_format"] = {"type": "json_object"}
     return payload

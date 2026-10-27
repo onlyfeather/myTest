@@ -41,9 +41,11 @@ async def chat(
     max_tokens: int | None = None,
     model: str = "",
 ) -> str:
-    """发一次对话请求，返回回复文本。失败时抛 ServiceError。"""
+    """发一次对话请求，返回回复文本。失败时抛 ServiceError。max_tokens 不传时用 WebUI 里的设置。"""
     if not has_api_key():
         raise ServiceError("还没有配置大模型的 API Key")
+    if max_tokens is None:
+        max_tokens = int(llm_settings.max_tokens)
     payload: dict[str, Any] = {
         "model": model or default_model(),
         "messages": messages,
