@@ -82,7 +82,7 @@ async def list_gpt_image_models() -> list[tuple[str, str]]:
 async def test_novelai() -> str:
     s = novelai_settings
     return await novelai.check_subscription(
-        token=str(s.token), base_url=str(s.account_url), proxy=str(draw_settings.proxy)
+        token=str(s.token), base_url=str(s.base_url), proxy=str(draw_settings.proxy)
     )
 
 

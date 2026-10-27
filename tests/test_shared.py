@@ -220,6 +220,26 @@ def test_novelai_generate(mock_http):
         asyncio.run(novelai.generate(req, token=" ", base_url="https://image.novelai.net"))
 
 
+def test_novelai_legacy_host_redirected(mock_http):
+    assert novelai.api_root("https://api.novelai.net") == "https://image.novelai.net"
+    assert novelai.api_root("https://api.novelai.net/") == "https://image.novelai.net"
+    assert novelai.api_root("") == "https://image.novelai.net"
+    assert novelai.api_root("https://relay.example/nai/") == "https://relay.example/nai"
+
+    calls, responder = mock_http
+    responder["fn"] = lambda req: httpx.Response(200, json={
+        "tier": 3, "trainingStepsLeft": {"fixedTrainingStepsLeft": 9898, "purchasedTrainingSteps": 32},
+    })
+    msg = asyncio.run(novelai.check_subscription(token="pst-x", base_url="https://api.novelai.net"))
+    assert str(calls[-1].url) == "https://image.novelai.net/user/subscription"
+    assert "Opus" in msg and "9930" in msg
+
+    responder["fn"] = lambda req: httpx.Response(200, content=_zip(PNG))
+    req = novelai.NovelAIRequest("1girl", "", "nai-diffusion-4-5-full", 832, 1216, 28, 5, "k_euler_ancestral")
+    asyncio.run(novelai.generate(req, token="pst-x", base_url="https://api.novelai.net"))
+    assert str(calls[-1].url) == "https://image.novelai.net/ai/generate-image"
+
+
 def test_gpt_image_generate(mock_http):
     calls, responder = mock_http
     responder["fn"] = lambda req: httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})

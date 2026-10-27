@@ -8,6 +8,8 @@ import zipfile
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 from .http import ServiceError, describe_http_error, http_client
 
 NAME = "NovelAI"
@@ -55,6 +57,23 @@ class NovelAIRequest:
     scale: float
     sampler: str
     seed: int | None = None
+
+
+OFFICIAL_HOST = "https://image.novelai.net"
+# 旧地址只留给官方网页用，第三方请求会返回 400
+# 「Please refresh NovelAI.net. If using a third-party tool, update to the image URL.」
+LEGACY_HOST = "api.novelai.net"
+
+
+def api_root(base_url: str) -> str:
+    url = base_url.strip().rstrip("/")
+    if not url:
+        return OFFICIAL_HOST
+    try:
+        host = httpx.URL(url).host
+    except httpx.InvalidURL:
+        return url
+    return OFFICIAL_HOST if host == LEGACY_HOST else url
 
 
 def is_v5(model: str) -> bool:
@@ -129,7 +148,7 @@ async def generate(
     if not token.strip():
         raise ServiceError("还没有配置 NovelAI 的 Token")
     payload = build_payload(req)
-    url = f"{base_url.rstrip('/')}/ai/generate-image"
+    url = f"{api_root(base_url)}/ai/generate-image"
     headers = {"Authorization": f"Bearer {token.strip()}", "Accept": "application/x-zip-compressed"}
     async with http_client(proxy, timeout) as client:
         resp = await client.post(url, json=payload, headers=headers)
@@ -142,8 +161,8 @@ async def check_subscription(*, token: str, base_url: str, proxy: str = "", time
     """调用订阅信息接口，确认 Token 可用，并返回剩余点数。"""
     if not token.strip():
         raise ServiceError("还没有配置 NovelAI 的 Token")
-    # 订阅接口在 api.novelai.net；如果用了第三方中转，这一步可能不存在，跳过即可。
-    url = f"{base_url.rstrip('/')}/user/subscription"
+    # 订阅接口和画图接口在同一个地址（image.novelai.net）；中转站可能没有这个接口。
+    url = f"{api_root(base_url)}/user/subscription"
     async with http_client(proxy, timeout) as client:
         resp = await client.get(url, headers={"Authorization": f"Bearer {token.strip()}"})
     if resp.status_code != 200:

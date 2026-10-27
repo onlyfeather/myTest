@@ -54,10 +54,9 @@ novelai_settings = register(
         fields=[
             SettingField("token", "Persistent API Token", type="secret", env=("novelai_token",),
                          help="NovelAI 网页 → 设置 → Account → Get Persistent API Token"),
-            SettingField("base_url", "画图接口地址", default="https://image.novelai.net",
-                         help="使用中转站时改成中转地址"),
-            SettingField("account_url", "账户接口地址", default="https://api.novelai.net",
-                         help="只用于「测试连接」查询点数"),
+            SettingField("base_url", "接口地址", default=novelai.OFFICIAL_HOST,
+                         help="画图和查询点数都用这个地址；使用中转站时改成中转地址。"
+                         "旧地址 api.novelai.net 已不再对第三方开放，会自动改用 image.novelai.net"),
             SettingField("model", "模型", type="select", default="nai-diffusion-4-5-full",
                          options=novelai.MODELS,
                          help="V5 节约模式固定 14 步和 Euler Ancestral，忽略下面的负面提示词（使用官方预设）"),
