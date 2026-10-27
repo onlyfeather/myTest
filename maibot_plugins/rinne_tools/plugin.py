@@ -60,11 +60,12 @@ class QzoneSection(PluginConfigBase):
     __ui_order__ = 2
 
     auto_enabled: bool = Field(default=False, description="定时自己发说说（开之前先把 Maizone 的定时发送关掉）")
-    owner_id: str = Field(default="", description="主人的 QQ 号（NoneBot 的 superuser），定时发说说用这个身份")
-    times: list[str] = Field(default_factory=lambda: ["10:30", "21:30"],
-                             description="每天的发送时段（北京时间，HH:MM），建议 1~2 个")
+    superuser_id: str = Field(default="", description="NoneBot 的 superuser QQ 号。定时说说用这个身份请求，NoneBot 会核对")
+    work_time: str = Field(default="10:00", description="上午、工作中的时段（北京时间 HH:MM，留空不发）")
+    off_work_time: str = Field(default="18:00", description="傍晚、刚下班的时段（留空不发）")
+    bedtime_time: str = Field(default="23:00", description="深夜、睡前的时段（留空不发）")
     jitter_minutes: int = Field(default=40, description="每个时段前后随机浮动多少分钟")
-    probability: float = Field(default=0.5, description="每个时段真的发的概率（0~1），调低可以减少风控")
+    probability: float = Field(default=0.5, description="到点后再判定一次：真的发的概率（0~1），调低可以减少风控")
     timeout: float = Field(default=300.0, description="写文案加画自拍的超时（秒）")
 
 
@@ -168,11 +169,11 @@ DICE_DESC = "投骰子、做检定、抽签、帮忙随机决定时调用。点�
 PIXIV_DESC = "在 Pixiv 上找插画发到聊天里。对方想看某个角色、某类题材的图时调用。"
 DAILY_DESC = "从 Pixiv 挑一张今日推荐发到聊天里。对方想看看今天的图、每日一图时调用。"
 QZONE_DESC = (
-    "在你自己的 QQ 空间发一条说说，配一张你的自拍。只有主人（管理员）让你发说说、发动态时调用，"
-    "别人提起时工具会拒绝，你婉拒即可。说说由工具按你的人设写，写的是你自己的日常，"
-    "不会提聊天内容。发出去要一两分钟，不要在聊天里写说说的内容。"
+    "在你自己的 QQ 空间发一条说说，配一张你的自拍。有人明确让你发说说、发动态时调用；"
+    "只有管理员（superuser）能让你发，你分不出是谁也照常调用，工具会核对身份，被拒绝时婉拒即可。"
+    "说说由工具按你的人设写，写的是你自己的日常，不会提聊天内容。发出去要一两分钟，不要在聊天里写说说的内容。"
 )
-QZONE_TOPIC_DESC = "主人指定的题材，例如「今天下雪了」。主人没指定就不填，不要把聊天内容填进来"
+QZONE_TOPIC_DESC = "对方指定的题材，例如「今天下雪了」。没指定就不填，不要把聊天内容填进来"
 QZONE_MOOD_DESC = "你现在的心情，两到六个字，例如「有点困」「心情不错」「被雨烦到」。会用在文案和自拍的表情上"
 
 SCENE_DESC = (
@@ -182,19 +183,22 @@ SCENE_DESC = (
 )
 
 
-def plan_slots(day: date, times: list[str], jitter_minutes: int, probability: float,
-               rng: random.Random) -> list[datetime]:
-    """排出某一天要发说说的时刻：每个时段按概率决定发不发，再前后随机浮动。"""
+def slot_times(cfg: QzoneSection) -> dict[str, str]:
+    """时段名（NoneBot 按它决定写什么状态）→ 配置的时间。"""
+    return {"work": cfg.work_time, "off_work": cfg.off_work_time, "bedtime": cfg.bedtime_time}
+
+
+def plan_slots(day: date, times: dict[str, str], jitter_minutes: int,
+               rng: random.Random) -> list[tuple[datetime, str]]:
+    """排出某一天每个时段的触发时刻（前后随机浮动）。发不发到点再判定。"""
     slots = []
     jitter = max(0, jitter_minutes)
-    for raw in times:
-        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(raw).strip())
+    for slot, raw in times.items():
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(raw or "").strip())
         if not m or int(m[1]) > 23 or int(m[2]) > 59:
             continue
-        if rng.random() >= probability:
-            continue
         base = datetime(day.year, day.month, day.day, int(m[1]), int(m[2]), tzinfo=BEIJING)
-        slots.append(base + timedelta(minutes=rng.uniform(-jitter, jitter)))
+        slots.append((base + timedelta(minutes=rng.uniform(-jitter, jitter)), slot))
     return sorted(slots)
 
 
@@ -368,10 +372,23 @@ class RinneToolsPlugin(MaiBotPlugin):
         cfg = self._cfg()
         if not (cfg.plugin.enabled and cfg.tools.qzone and cfg.qzone.auto_enabled):
             return
-        if not cfg.qzone.owner_id.strip().isdigit():
-            self.ctx.logger.warning("[凛音工具] 定时说说没有开启：没有填主人的 QQ 号（owner_id）")
+        if not cfg.qzone.superuser_id.strip().isdigit():
+            self.ctx.logger.warning("[凛音工具] 定时说说没有开启：没有填 superuser 的 QQ 号（superuser_id）")
             return
         self._scheduler_task = asyncio.get_running_loop().create_task(self._schedule_loop())
+
+    async def _scheduled_post(self, slot: str, rng: random.Random) -> None:
+        """到点后再判定一次发不发，通过了才让 NoneBot 按时段拟事件、写文案。"""
+        cfg = self._cfg().qzone
+        roll = rng.random()
+        if roll >= cfg.probability:
+            self.ctx.logger.info("[凛音工具] 定时说说（%s）这次不发（%.2f ≥ %.2f）", slot, roll, cfg.probability)
+            return
+        self.ctx.logger.info("[凛音工具] 定时说说（%s）判定通过，开始写", slot)
+        try:
+            await self._post_qzone({"user_id": cfg.superuser_id.strip(), "group_id": None, "args": {"slot": slot}})
+        except Exception as e:
+            self.ctx.logger.warning("[凛音工具] 定时说说失败：%s", e)
 
     async def _schedule_loop(self, rng: random.Random | None = None) -> None:
         rng = rng or random.Random()
@@ -379,15 +396,12 @@ class RinneToolsPlugin(MaiBotPlugin):
         while True:
             cfg = self._cfg().qzone
             now = datetime.now(BEIJING)
-            slots = [t for t in plan_slots(day, cfg.times, cfg.jitter_minutes, cfg.probability, rng) if t > now]
-            self.ctx.logger.info("[凛音工具] %s 的定时说说：%s", day,
-                                 "、".join(t.strftime("%H:%M") for t in slots) or "不发")
-            for slot in slots:
-                await asyncio.sleep(max(0.0, (slot - datetime.now(BEIJING)).total_seconds()))
-                try:
-                    await self._post_qzone({"user_id": cfg.owner_id.strip(), "group_id": None, "args": {}})
-                except Exception as e:
-                    self.ctx.logger.warning("[凛音工具] 定时说说失败：%s", e)
+            slots = [(t, s) for t, s in plan_slots(day, slot_times(cfg), cfg.jitter_minutes, rng) if t > now]
+            self.ctx.logger.info("[凛音工具] %s 的定时说说时刻：%s", day,
+                                 "、".join(f"{t:%H:%M}（{s}）" for t, s in slots) or "没有")
+            for at, slot in slots:
+                await asyncio.sleep(max(0.0, (at - datetime.now(BEIJING)).total_seconds()))
+                await self._scheduled_post(slot, rng)
             day += timedelta(days=1)
             midnight = datetime(day.year, day.month, day.day, tzinfo=BEIJING)
             await asyncio.sleep(max(0.0, (midnight - datetime.now(BEIJING)).total_seconds()) + 5)
@@ -501,7 +515,7 @@ class RinneToolsPlugin(MaiBotPlugin):
         self._spawn(self._qzone_job(body, str(kwargs.get("stream_id") or kwargs.get("chat_id") or "")))
         return {
             "success": True,
-            "content": "说说正在写、自拍正在画，一两分钟后会发到你的 QQ 空间。用你自己的口吻简短回应主人，"
+            "content": "说说正在写、自拍正在画，一两分钟后会发到你的 QQ 空间。用你自己的口吻简短回应对方，"
                        "不要在聊天里写说说的内容。",
         }
 

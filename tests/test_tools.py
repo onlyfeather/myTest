@@ -465,6 +465,27 @@ def test_qzone_write_post_retries_ai_flavor(monkeypatch, tmp_path):
     assert [h["text"] for h in qzone.load_history()] == ["红茶罐见底了。"]
 
 
+def test_qzone_slot_prompts(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    reply = '{"event": "睡前发现明天要熨的衬衫还没收", "text": "衬衫还挂在外面。算了，明早再收", "mood": "困", "scene": "睡衣"}'
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [reply] * 3)
+    night = datetime(2026, 10, 28, 23, 10, tzinfo=qzone.BEIJING)
+    post = asyncio.run(qzone.write_post(slot="bedtime", now=night))
+    assert post.event.startswith("睡前")
+    system, user = calls[0][0]["content"], calls[0][1]["content"]
+    assert "深夜，睡前" in system and "不用敬语" in system and "睡衣" in user
+    assert "可以从这里挑" not in user, "定时时段按时段拟事件，不用随机题材"
+
+    morning = datetime(2026, 10, 28, 9, 50, tzinfo=qzone.BEIJING)
+    asyncio.run(qzone.write_post(slot="work", now=morning))
+    assert "上午，工作中" in calls[1][0]["content"] and "工作时间" in calls[1][0]["content"]
+    # 18 点按人设本来还算上班时间，但「刚下班」时段要用下班口吻
+    evening = datetime(2026, 10, 28, 17, 30, tzinfo=qzone.BEIJING)
+    asyncio.run(qzone.write_post(slot="off_work", now=evening))
+    assert "刚下班" in calls[2][0]["content"] and "下班后" in calls[2][0]["content"]
+
+
 def test_qzone_write_post_gives_up(monkeypatch, tmp_path):
     from mytest.plugins._shared.services.http import ServiceError
 
@@ -507,8 +528,10 @@ def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
     monkeypatch.setattr(qzone, "remember", lambda text, now=None: remembered.append(text))
     monkeypatch.setattr(selfie, "take_selfie", fake_selfie)
 
-    with pytest.raises(ToolError, match="主人"):
+    with pytest.raises(ToolError, match="superuser"):
         asyncio.run(tools.TOOLS["qzone"].run(ToolContext("123456", "654321"), {}))
+    with pytest.raises(ToolError, match="superuser"):
+        asyncio.run(tools.TOOLS["qzone"].run(ToolContext("123456", None), {"slot": "work"}))
 
     owner = ToolContext("1196477724", "654321")
     assert asyncio.run(tools.TOOLS["qzone"].run(owner, {"check_only": True}))["content"] == "可以发"
@@ -516,8 +539,10 @@ def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
 
     result = asyncio.run(tools.TOOLS["qzone"].run(owner, {"mood": "心情" * 20, "topic": "下雪"}))
     assert result["text"] == "停电了。" and base64.b64decode(result["image"]) == b"png"
-    assert asked == {"topic": "下雪", "mood": ("心情" * 20)[:20]}
+    assert asked == {"topic": "下雪", "mood": ("心情" * 20)[:20], "slot": ""}
     assert scenes == ["烛光下。表情和气氛：有点烦"] and remembered == ["停电了。"]
+    asyncio.run(tools.TOOLS["qzone"].run(ToolContext("1196477724", None), {"slot": "bedtime"}))
+    assert asked["slot"] == "bedtime"
     assert sent == [], "说说不发到聊天里"
 
     monkeypatch.setattr(qzone, "qzone_ready", lambda: "发说说功能已关闭")
@@ -526,20 +551,46 @@ def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
 
 
 def test_rinne_tools_plan_slots():
-    from datetime import date
+    from datetime import date, datetime
 
     mod = _load_rinne_tools()
     day = date(2026, 10, 28)
     rng = random.Random(1)
-    assert mod.plan_slots(day, ["10:30", "21:30"], 40, 0.0, rng) == []
-    slots = mod.plan_slots(day, ["21:30", "10:30", "25:00", "abc", "9:61"], 40, 1.0, rng)
-    assert len(slots) == 2 and slots[0] < slots[1]
-    for slot, (h, m) in zip(slots, [(10, 30), (21, 30)], strict=True):
-        base = slot.replace(hour=h, minute=m, second=0, microsecond=0)
-        assert abs((slot - base).total_seconds()) <= 40 * 60
-        assert slot.utcoffset().total_seconds() == 8 * 3600
-    exact = mod.plan_slots(day, ["08:00"], 0, 1.0, rng)
-    assert exact[0].hour == 8 and exact[0].minute == 0
+    cfg = mod.QzoneSection()
+    assert mod.slot_times(cfg) == {"work": "10:00", "off_work": "18:00", "bedtime": "23:00"}
+    for _ in range(50):
+        slots = mod.plan_slots(day, mod.slot_times(cfg), 40, rng)
+        assert [s for _, s in slots] == ["work", "off_work", "bedtime"]
+        for at, slot in slots:
+            h = {"work": 10, "off_work": 18, "bedtime": 23}[slot]
+            base = datetime(2026, 10, 28, h, tzinfo=mod.BEIJING)
+            assert abs((at - base).total_seconds()) <= 40 * 60
+    # 留空或写错的时段不发
+    slots = mod.plan_slots(day, {"work": "", "off_work": "25:00", "bedtime": "9:61"}, 40, rng)
+    assert slots == []
+    exact = mod.plan_slots(day, {"work": "08:00"}, 0, rng)
+    assert exact == [(datetime(2026, 10, 28, 8, tzinfo=mod.BEIJING), "work")]
+
+
+def test_rinne_tools_scheduled_post_rolls_at_slot(monkeypatch):
+    mod = _load_rinne_tools()
+    plugin, logs, _ = _tools_plugin(mod, {})
+    cfg = mod.RinneToolsConfig()
+    cfg.qzone.superuser_id = "1196477724"
+    plugin._cfg = lambda: cfg
+    posted = []
+
+    async def fake_post(body):
+        posted.append(body)
+        return "ok"
+
+    monkeypatch.setattr(plugin, "_post_qzone", fake_post)
+    cfg.qzone.probability = 0.0
+    asyncio.run(plugin._scheduled_post("work", random.Random(0)))
+    assert posted == [] and any("不发" in line for line in logs)
+    cfg.qzone.probability = 1.0
+    asyncio.run(plugin._scheduled_post("bedtime", random.Random(0)))
+    assert posted == [{"user_id": "1196477724", "group_id": None, "args": {"slot": "bedtime"}}]
 
 
 def _qzone_plugin(mod, monkeypatch, api_result, nonebot_replies):
@@ -628,7 +679,7 @@ def test_rinne_tools_scheduler_needs_owner():
         plugin, logs, _ = _tools_plugin(mod, {})
         cfg = mod.RinneToolsConfig()
         cfg.qzone.auto_enabled = True
-        cfg.qzone.owner_id = owner_id
+        cfg.qzone.superuser_id = owner_id
         plugin._cfg = lambda: cfg
         plugin._restart_scheduler()
         task = plugin._scheduler_task
@@ -637,6 +688,6 @@ def test_rinne_tools_scheduler_needs_owner():
         return task, logs
 
     task, logs = asyncio.run(run(""))
-    assert task is None and any("owner_id" in line for line in logs)
+    assert task is None and any("superuser_id" in line for line in logs)
     task, _ = asyncio.run(run("1196477724"))
     assert task is not None

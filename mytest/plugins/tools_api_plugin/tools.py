@@ -370,16 +370,17 @@ async def tool_qzone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     from .selfie import selfie_ready, take_selfie
 
     if not _is_superuser(ctx.user_id):
-        raise ToolError("发说说只有主人（管理员）能让你发，其他人请用自己的话婉拒")
+        raise ToolError("发说说只有管理员（superuser）能让你发，这个人不是，请用自己的话婉拒")
     if reason := qzone_ready() or selfie_ready():
         raise ToolError(reason)
     topic = _text(args, "topic", limit=100)
     mood = _text(args, "mood", limit=100)[:20]
+    slot = _text(args, "slot", limit=20)
     if args.get("check_only") is True:
         return {"content": "可以发"}
 
     try:
-        post = await write_post(topic=topic, mood=mood)
+        post = await write_post(topic=topic, mood=mood, slot=slot)
         image = await take_selfie(post.selfie_scene)
     except Exception as e:
         logger.opt(exception=e).warning("[凛音工具] qzone 失败")
@@ -441,7 +442,12 @@ TOOLS: dict[str, ToolSpec] = {
         ToolSpec(
             "qzone",
             "写一条说说并配自拍（只返回内容，不发送）",
-            {"topic": {"type": "string"}, "mood": {"type": "string"}, "check_only": {"type": "boolean"}},
+            {
+                "topic": {"type": "string"},
+                "mood": {"type": "string"},
+                "slot": {"type": "string", "enum": ["work", "off_work", "bedtime"]},
+                "check_only": {"type": "boolean"},
+            },
             tool_qzone,
         ),
     )
