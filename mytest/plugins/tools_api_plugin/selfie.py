@@ -33,6 +33,10 @@ selfie_settings = register(
                 ),
                 help="每次自拍都会加上的固定描述（外貌、服装）。NovelAI 用英文 tag；GPT Image 也能读懂",
             ),
+            SettingField("novelai_model", "NovelAI 模型", type="select", default=novelai.REFERENCE_MODELS[0],
+                         options=tuple(m for m in novelai.MODELS if novelai.supports_reference(m[0])),
+                         help="自拍要用人设图做角色参考，只有 V4.5 支持；和画图用的模型分开设置，"
+                         "其余参数（步数、画师串等）沿用 NovelAI 的设置"),
             SettingField("with_style", "连画风一起参考", type="bool", default=True,
                          help="仅 NovelAI：打开后画风也贴近人设图"),
         ],
@@ -85,12 +89,13 @@ def selfie_ready() -> str:
         return "自拍功能已关闭"
     if not persona_path().exists():
         return "还没有上传凛音的人设图，请管理员在 WebUI 的「凛音自拍」里上传"
-    if str(selfie_settings.backend) == "novelai":
-        from ..ai_draw_plugin.config import novelai_settings
-
-        if not novelai.supports_reference(str(novelai_settings.model)):
-            return "自拍需要 NovelAI V4.5 模型，请在 WebUI 里换模型，或把自拍改成用 GPT Image"
     return ""
+
+
+def selfie_model() -> str:
+    """自拍固定用支持角色参考的模型，不跟随画图的模型设置。"""
+    model = str(selfie_settings.novelai_model)
+    return model if novelai.supports_reference(model) else novelai.REFERENCE_MODELS[0]
 
 
 async def take_selfie(scene: str) -> bytes:
@@ -130,7 +135,7 @@ async def take_selfie(scene: str) -> bytes:
         novelai.NovelAIRequest(
             prompt=compose(str(s.positive_prefix), str(s.default_artists), f"{base}, {scene_tags}"),
             negative=str(s.negative),
-            model=str(s.model),
+            model=selfie_model(),
             width=width,
             height=height,
             steps=int(s.steps),

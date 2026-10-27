@@ -192,6 +192,42 @@ def test_selfie_requires_persona_image(sent):
     assert sent == []
 
 
+def test_selfie_uses_v45_even_when_drawing_uses_v5(monkeypatch, tmp_path):
+    """自拍要角色参考，只有 V4.5 支持；画图换成 V5 不能让自拍跟着失败。"""
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    from mytest.plugins._shared.services import novelai
+    from mytest.plugins.ai_draw_plugin import config as draw_config
+    from mytest.plugins.tools_api_plugin import selfie
+
+    persona = tmp_path / "rinne_persona.png"
+    Image.new("RGB", (64, 96), "white").save(persona)
+    monkeypatch.setattr(selfie, "persona_path", lambda: persona)
+    monkeypatch.setattr(selfie, "selfie_settings", SimpleNamespace(
+        enabled=True, backend="novelai", base_prompt="1girl", with_style=True, novelai_model="nai-diffusion-5-full",
+    ))
+    nai = {k: getattr(draw_config.novelai_settings, k) for k in (
+        "token", "base_url", "negative", "steps", "scale", "sampler", "positive_prefix", "default_artists",
+        "reference_strength", "reference_fidelity", "timeout",
+    )}
+    monkeypatch.setattr(draw_config, "novelai_settings",
+                        SimpleNamespace(**nai, model="nai-diffusion-5-full", translate=False))
+    used = {}
+
+    async def fake_generate(req, **kwargs):
+        used["model"] = req.model
+        return b"png", 1
+
+    monkeypatch.setattr(novelai, "generate", fake_generate)
+
+    assert selfie.selfie_ready() == ""
+    assert asyncio.run(selfie.take_selfie("office")) == b"png"
+    # 设置里存了不支持参考的模型（例如旧配置）时退回 V4.5
+    assert used["model"] in novelai.REFERENCE_MODELS
+
+
 # ---------------------------------------------------------------- MaiBot 插件的消息解析
 
 
