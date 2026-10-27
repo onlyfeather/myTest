@@ -47,9 +47,15 @@ def is_ready() -> bool:
 async def synthesize(text: str, *, superuser: bool = False) -> bytes:
     """superuser 可以唱歌、说大段的话；其他人唱歌会被拒绝，字数按 max_chars 限制。"""
     s = tts_settings
-    if not superuser and is_singing(text):
+    singing = is_singing(text)
+    if not superuser and singing:
         raise ServiceError("唱歌只有管理员可以用")
-    text = speakable(text, keep_directions=str(s.model) == fish_audio.DRAMA_MODEL)
+    model = str(s.model)
+    reference_id = str(s.reference_id)
+    if singing:
+        model = str(s.singing_model) or model
+        reference_id = str(s.singing_reference_id) or reference_id
+    text = speakable(text, keep_directions=model == fish_audio.DRAMA_MODEL)
     if not text:
         raise ServiceError("没有可以朗读的文字")
     limit = char_limit(superuser=superuser)
@@ -60,8 +66,8 @@ async def synthesize(text: str, *, superuser: bool = False) -> bytes:
         text,
         api_key=str(s.api_key),
         base_url=str(s.base_url),
-        model=str(s.model),
-        reference_id=str(s.reference_id),
+        model=model,
+        reference_id=reference_id,
         audio_format=str(s.format),
         speed=float(s.speed),
         volume=float(s.volume),
@@ -70,9 +76,12 @@ async def synthesize(text: str, *, superuser: bool = False) -> bytes:
     )
 
 
-async def list_voices() -> list[tuple[str, str]]:
+async def search_voices(*, query: str = "", page: int = 1, mine: bool = False, language: str = "") -> dict:
     s = tts_settings
-    return await model_list.fish_voices(api_key=str(s.api_key), base_url=str(s.base_url), proxy=str(s.proxy))
+    return await model_list.fish_voices(
+        api_key=str(s.api_key), base_url=str(s.base_url), query=query, page=page, mine=mine,
+        language=language, proxy=str(s.proxy),
+    )
 
 
 async def test_tts() -> str:

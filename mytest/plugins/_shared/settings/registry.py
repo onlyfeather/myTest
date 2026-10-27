@@ -31,6 +31,24 @@ class FileSlot:
     save: Callable[[bytes], str]  # 校验并保存，返回给用户看的说明；不合法时抛 ValueError
     help: str = ""
     max_bytes: int = 20 * 1024 * 1024
+
+
+@dataclass
+class Picker:
+    """WebUI 里单独的一页：搜索外部资源（比如音色库），选中后写进某个分区的配置项。
+
+    search(query=, page=, mine=, language=) 返回 {"items": [{value, title, detail, sample}], "total", "has_more"}。
+    """
+
+    id: str
+    title: str
+    section_id: str
+    targets: tuple[tuple[str, str], ...]  # (配置项, 显示文字)
+    search: Callable[..., Awaitable[dict[str, Any]]]
+    description: str = ""
+
+
+MAX_PICKER_ITEMS = 100
 _TRUE_WORDS = {"1", "true", "yes", "on", "开", "开启", "启用"}
 _FALSE_WORDS = {"0", "false", "no", "off", "关", "关闭", "停用", ""}
 
@@ -170,6 +188,7 @@ class SettingsStore:
         self.path = Path(path)
         self._env_lookup = env_lookup or (lambda name: os.environ.get(name.upper()))
         self._sections: dict[str, SettingSection] = {}
+        self._pickers: dict[str, Picker] = {}
         self._lock = threading.RLock()
         self._values: dict[str, dict[str, Any]] = self._load()
 
@@ -222,6 +241,52 @@ class SettingsStore:
             if len(result) >= MAX_FETCHED_OPTIONS:
                 break
         return result
+
+    def add_picker(self, picker: Picker) -> None:
+        with self._lock:
+            section = self._sections[picker.section_id]
+            for key, _ in picker.targets:
+                section.get_field(key)
+            self._pickers[picker.id] = picker
+
+    def picker(self, picker_id: str) -> Picker:
+        found = self._pickers.get(picker_id)
+        if found is None:
+            raise KeyError(f"没有 {picker_id} 这个选择页")
+        return found
+
+    async def search_picker(
+        self, picker_id: str, *, query: str = "", page: int = 1, mine: bool = False, language: str = ""
+    ) -> dict[str, Any]:
+        raw = await self.picker(picker_id).search(query=query, page=page, mine=mine, language=language)
+        items = []
+        for item in (raw.get("items") or [])[:MAX_PICKER_ITEMS]:
+            value = str(item.get("value") or "").strip()
+            if not value:
+                continue
+            sample = str(item.get("sample") or "")
+            items.append(
+                {
+                    "value": value,
+                    "title": str(item.get("title") or value),
+                    "detail": str(item.get("detail") or ""),
+                    # 只放行 https 地址，浏览器里直接用 <audio> 试听。
+                    "sample": sample if sample.startswith("https://") else "",
+                }
+            )
+        return {"items": items, "total": int(raw.get("total") or 0), "has_more": bool(raw.get("has_more"))}
+
+    def describe_pickers(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": p.id,
+                "title": p.title,
+                "description": p.description,
+                "section_id": p.section_id,
+                "targets": [{"key": key, "label": label} for key, label in p.targets],
+            }
+            for p in self._pickers.values()
+        ]
 
     async def run_test(self, section_id: str) -> str:
         section = self._sections.get(section_id)

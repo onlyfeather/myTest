@@ -137,7 +137,7 @@ def create_router(
                 "Referrer-Policy": "no-referrer",
                 "Content-Security-Policy": (
                     "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; "
-                    "connect-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'"
+                    "connect-src 'self'; img-src 'self' data:; media-src https:; form-action 'self'; frame-ancestors 'none'"
                 ),
             },
         )
@@ -193,7 +193,44 @@ def create_router(
     async def get_settings(request: Request) -> JSONResponse:
         if not authed(request):
             return error(401, "请先登录")
-        return JSONResponse({"ok": True, "sections": store.describe()}, headers={"Cache-Control": "no-store"})
+        return JSONResponse(
+            {"ok": True, "sections": store.describe(), "pickers": store.describe_pickers()},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.post("/api/pickers/{picker_id}/search", include_in_schema=False)
+    async def search_picker(picker_id: str, request: Request) -> JSONResponse:
+        # 和获取列表一样用 POST：会用保存的密钥去请求外部接口。
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            picker = store.picker(picker_id)
+        except KeyError:
+            return error(404, "没有这个选择页")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            return error(400, "请求格式不正确")
+        try:
+            page = max(1, min(int(body.get("page") or 1), 1000))
+        except (TypeError, ValueError):
+            return error(400, "页码不正确")
+        title = next((s.title for s in store.sections() if s.id == picker.section_id), picker.title)
+        try:
+            result = await store.search_picker(
+                picker_id,
+                query=str(body.get("query") or "")[:100],
+                page=page,
+                mine=bool(body.get("mine")),
+                language=str(body.get("language") or "")[:10],
+            )
+        except Exception as e:
+            return JSONResponse({"ok": False, "message": describe_exception(title, e)})
+        return JSONResponse({"ok": True, **result})
 
     @router.put("/api/settings/{section_id}", include_in_schema=False)
     async def put_settings(section_id: str, request: Request) -> JSONResponse:

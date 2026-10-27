@@ -391,15 +391,24 @@ def test_model_list_services(mock_http, monkeypatch):
     with pytest.raises(http.ServiceError, match="/v1"):
         asyncio.run(model_list.openai_models("大模型", api_key="sk", base_url="https://x"))
 
-    def fish(req):
-        if req.url.params.get("self") == "true":
-            return httpx.Response(200, json={"items": [{"_id": "mine1", "title": "凛音"}]})
-        return httpx.Response(200, json={"items": [{"_id": "pub1", "title": ""}, {"title": "no id"}]})
-
-    responder["fn"] = fish
-    voices = asyncio.run(model_list.fish_voices(api_key="k", base_url="https://api.fish.audio"))
-    assert voices == [("mine1", "我的 · 凛音"), ("pub1", "热门 · 未命名")]
+    responder["fn"] = lambda req: httpx.Response(200, json={"total": 45, "items": [
+        {"_id": "v1", "title": "凛音", "tags": ["少女", ""], "task_count": 12, "like_count": 3,
+         "author": {"nickname": "千树"}, "samples": [{"audio": "https://cdn/a.mp3"}]},
+        {"_id": "v2", "title": ""}, {"title": "no id"},
+    ]})
+    result = asyncio.run(model_list.fish_voices(api_key="k", base_url="https://api.fish.audio/v1", query=" 凛 ",
+                                                page=2, mine=True, language="zh"))
     assert calls[-1].url.path == "/model" and calls[-1].headers["authorization"] == "Bearer k"
+    params = calls[-1].url.params
+    assert (params["title"], params["page_number"], params["self"], params["language"]) == ("凛", "2", "true", "zh")
+    assert result["total"] == 45 and result["has_more"] is True, "page 2 of 20 still has more"
+    assert result["items"][0] == {"value": "v1", "title": "凛音", "detail": "千树 · 使用 12 次 · 3 赞 · #少女",
+                                  "sample": "https://cdn/a.mp3"}
+    assert [i["value"] for i in result["items"]] == ["v1", "v2"] and result["items"][1]["title"] == "未命名"
+    asyncio.run(model_list.fish_voices(api_key="k", base_url="https://api.fish.audio"))
+    assert "title" not in calls[-1].url.params and "self" not in calls[-1].url.params
+    with pytest.raises(http.ServiceError, match="API Key"):
+        asyncio.run(model_list.fish_voices(api_key=" ", base_url="https://api.fish.audio"))
 
 
 def test_webui_options_endpoint(tmp_path):
@@ -421,6 +430,42 @@ def test_webui_options_endpoint(tmp_path):
     assert client.post("/webui/api/settings/demo/options/model", headers=HEAD).status_code == 404
     store.set_options_provider("demo", "voice", broken)
     assert client.post(url, headers=HEAD).json() == {"ok": False, "message": "接口挂了"}
+
+
+def test_webui_picker(tmp_path):
+    from mytest.plugins._shared.settings import Picker
+
+    client, store = make_app(tmp_path)
+    store._sections["demo"].fields.append(SettingField("voice", "音色"))
+    seen = {}
+
+    async def search(**kwargs):
+        seen.update(kwargs)
+        return {"total": 1, "has_more": False, "items": [
+            {"value": "v1", "title": "音色一", "sample": "javascript:alert(1)"}, {"value": " ", "title": "空"},
+        ]}
+
+    with pytest.raises(KeyError):
+        store.add_picker(Picker(id="bad", title="坏", section_id="demo", targets=(("nope", "x"),), search=search))
+    store.add_picker(Picker(id="voices", title="选择音色", section_id="demo", targets=(("voice", "设为音色"),),
+                            search=search))
+    url = "/webui/api/pickers/voices/search"
+    assert client.post(url, json={}, headers=HEAD).status_code == 401
+    client.post("/webui/api/login", json={"password": "correct-horse-battery"}, headers=HEAD)
+    assert client.post(url, json={}).status_code == 403
+    assert client.get("/webui/api/settings").json()["pickers"][0]["targets"] == [{"key": "voice", "label": "设为音色"}]
+    r = client.post(url, json={"query": "凛", "page": 3, "mine": True}, headers=HEAD).json()
+    assert seen == {"query": "凛", "page": 3, "mine": True, "language": ""}
+    assert r == {"ok": True, "total": 1, "has_more": False,
+                 "items": [{"value": "v1", "title": "音色一", "detail": "", "sample": ""}]}, "non-https sample dropped"
+    assert client.post(url, json={"page": "x"}, headers=HEAD).status_code == 400
+    assert client.post("/webui/api/pickers/nope/search", json={}, headers=HEAD).status_code == 404
+
+    async def broken(**kwargs):
+        raise http.ServiceError("接口挂了")
+
+    store.picker("voices").search = broken
+    assert client.post(url, json={}, headers=HEAD).json() == {"ok": False, "message": "接口挂了"}
 
 
 def test_webui_file_upload(tmp_path):

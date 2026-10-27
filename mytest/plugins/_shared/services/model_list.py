@@ -48,32 +48,74 @@ def image_only(ids: list[str]) -> list[tuple[str, str]]:
     return [(m, m) for m in (images or ids)]
 
 
-async def fish_voices(*, api_key: str, base_url: str, proxy: str = "", timeout: float = 30.0) -> list[tuple[str, str]]:
-    """自己的音色在前，然后是公共音色库里最常用的。"""
+FISH_PAGE_SIZE = 20
+
+
+async def fish_voices(
+    *,
+    api_key: str,
+    base_url: str,
+    query: str = "",
+    page: int = 1,
+    mine: bool = False,
+    language: str = "",
+    proxy: str = "",
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """搜索 Fish Audio 音色库（mine=True 只看自己的），按使用次数排序，一页 FISH_PAGE_SIZE 个。"""
     if not api_key.strip():
         raise ServiceError("请先填写并保存 Fish Audio 的 API Key")
-    headers = {"Authorization": f"Bearer {api_key.strip()}"}
     from .fish_audio import api_root
 
-    url = f"{api_root(base_url)}/model"
-    result: list[tuple[str, str]] = []
+    params: dict[str, Any] = {
+        "page_size": FISH_PAGE_SIZE,
+        "page_number": max(1, int(page)),
+        "sort_by": "created_at" if mine else "task_count",
+    }
+    if query.strip():
+        params["title"] = query.strip()
+    if mine:
+        params["self"] = "true"
+    if language.strip():
+        params["language"] = language.strip()
     async with http_client(proxy, timeout) as client:
-        for params, tag in (
-            ({"self": "true", "page_size": 100, "sort_by": "created_at"}, "我的"),
-            ({"page_size": 100, "sort_by": "task_count", "language": "zh"}, "热门"),
-        ):
-            resp = await client.get(url, params=params, headers=headers)
-            if resp.status_code != 200:
-                raise ServiceError(describe_http_error("Fish Audio", resp))
-            try:
-                items = resp.json().get("items") or []
-            except (ValueError, AttributeError):
-                raise ServiceError("Fish Audio 返回的音色列表格式不对") from None
-            for item in items:
-                if not isinstance(item, dict) or not item.get("_id"):
-                    continue
-                title = str(item.get("title") or "").strip() or "未命名"
-                result.append((str(item["_id"]), f"{tag} · {title}"))
-    if not result:
-        raise ServiceError("没有找到可用的音色")
-    return result
+        resp = await client.get(
+            f"{api_root(base_url)}/model", params=params, headers={"Authorization": f"Bearer {api_key.strip()}"}
+        )
+    if resp.status_code != 200:
+        raise ServiceError(describe_http_error("Fish Audio", resp))
+    try:
+        data = resp.json()
+        raw_items = data.get("items") or []
+    except (ValueError, AttributeError):
+        raise ServiceError("Fish Audio 返回的音色列表格式不对") from None
+    items = []
+    for item in raw_items:
+        if not isinstance(item, dict) or not item.get("_id"):
+            continue
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        tags = [str(t) for t in item.get("tags") or [] if t][:5]
+        detail = " · ".join(
+            part
+            for part in (
+                str(author.get("nickname") or "").strip(),
+                f"使用 {int(item.get('task_count') or 0)} 次",
+                f"{int(item.get('like_count') or 0)} 赞",
+                " ".join(f"#{t}" for t in tags),
+            )
+            if part
+        )
+        samples = [s for s in item.get("samples") or [] if isinstance(s, dict) and s.get("audio")]
+        items.append(
+            {
+                "value": str(item["_id"]),
+                "title": str(item.get("title") or "").strip() or "未命名",
+                "detail": detail,
+                "sample": str(samples[0]["audio"]) if samples else "",
+            }
+        )
+    total = int(data.get("total") or 0) if isinstance(data, dict) else 0
+    has_more = data.get("has_more")
+    if has_more is None:
+        has_more = params["page_number"] * FISH_PAGE_SIZE < total
+    return {"items": items, "total": total, "has_more": bool(has_more)}

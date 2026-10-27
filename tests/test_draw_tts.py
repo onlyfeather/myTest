@@ -67,7 +67,8 @@ def test_singing_and_long_text_need_superuser(monkeypatch):
 
     monkeypatch.setattr(service, "tts_settings", SimpleNamespace(
         model=fish_audio.DRAMA_MODEL, max_chars=10, superuser_max_chars=50, api_key="k", base_url="https://x",
-        reference_id="", format="mp3", speed=1.0, volume=0.0, proxy="", timeout=5.0,
+        reference_id="", singing_reference_id="", singing_model="", format="mp3", speed=1.0, volume=0.0,
+        proxy="", timeout=5.0,
     ))
     sent = []
 
@@ -90,6 +91,35 @@ def test_singing_and_long_text_need_superuser(monkeypatch):
     asyncio.run(service.synthesize("字" * 50, superuser=True))
     with pytest.raises(ServiceError, match="50"):
         asyncio.run(service.synthesize("字" * 51, superuser=True))
+
+
+def test_singing_uses_its_own_voice(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from mytest.plugins._shared.services import fish_audio
+    from mytest.plugins.tts_plugin import service
+
+    settings = SimpleNamespace(
+        model="s2.1-pro", max_chars=100, superuser_max_chars=100, api_key="k", base_url="https://x",
+        reference_id="talk", singing_reference_id="sing", singing_model=fish_audio.DRAMA_MODEL,
+        format="mp3", speed=1.0, volume=0.0, proxy="", timeout=5.0,
+    )
+    monkeypatch.setattr(service, "tts_settings", settings)
+    calls = []
+
+    async def fake_synthesize(text, **kwargs):
+        calls.append((text, kwargs["model"], kwargs["reference_id"]))
+        return b"mp3"
+
+    monkeypatch.setattr(fish_audio, "synthesize", fake_synthesize)
+    asyncio.run(service.synthesize("[happy] 你好"))
+    assert calls[-1] == ("你好", "s2.1-pro", "talk")
+    asyncio.run(service.synthesize("[singing] 啦啦啦", superuser=True))
+    assert calls[-1] == ("[singing] 啦啦啦", fish_audio.DRAMA_MODEL, "sing"), "Drama 3 keeps the cue"
+    settings.singing_reference_id = settings.singing_model = ""
+    asyncio.run(service.synthesize("[singing] 啦啦啦", superuser=True))
+    assert calls[-1] == ("啦啦啦", "s2.1-pro", "talk"), "empty singing settings fall back"
 
 
 def test_drama3_listed():

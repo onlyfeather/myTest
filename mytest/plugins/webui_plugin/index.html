@@ -167,7 +167,8 @@ input[type=search]:focus { outline: none; border-color: var(--accent); backgroun
 <script>
 "use strict";
 const API = location.pathname.replace(/\/+$/, "") + "/api";
-const state = { sections: [], current: null, draft: {}, reset: new Set(), errors: {} };
+const state = { sections: [], pickers: [], current: null, draft: {}, reset: new Set(), errors: {} };
+const PICKER = "pick:"; // 选择页在 state.current / 地址栏里的前缀
 const root = document.getElementById("root");
 
 function h(tag, attrs, ...children) {
@@ -408,9 +409,93 @@ function fieldRow(f) {
       } }, f.env.length ? "恢复为 .env / 默认值" : "恢复默认值") : null));
 }
 
+/* ---------------- 选择页（比如音色库） ---------------- */
+const pickerState = {}; // 选择页 id → { query, mine, language, page, result }
+const currentPicker = () => state.current?.startsWith(PICKER)
+  ? state.pickers.find((p) => PICKER + p.id === state.current) : null;
+
+async function searchPicker(p, page = 1) {
+  const ps = pickerState[p.id];
+  ps.loading = true; renderMain();
+  try {
+    const r = await api(`/pickers/${encodeURIComponent(p.id)}/search`, {
+      method: "POST", body: JSON.stringify({ query: ps.query, mine: ps.mine, language: ps.language, page }),
+    });
+    if (!r.ok) toast(r.message || "搜索失败", false);
+    else { ps.result = r; ps.page = page; }
+  } catch (e) { /* 已处理 */ } finally { ps.loading = false; renderMain(); }
+}
+
+async function assignPick(p, key, item) {
+  const target = p.targets.find((t) => t.key === key);
+  const r = await api(`/settings/${encodeURIComponent(p.section_id)}`, {
+    method: "PUT", body: JSON.stringify({ values: { [key]: item.value } }),
+  }).catch(() => null);
+  if (!r) return;
+  if (!r.ok) return toast(r.message || "保存失败", false);
+  const s = state.sections.find((x) => x.id === p.section_id);
+  if (s) Object.assign(s, r.section);
+  pickerState[p.id].names[item.value] = item.title;
+  toast(`已${target ? target.label : "设置"}：${item.title}`);
+  renderMain();
+}
+
+function renderPicker(p, main) {
+  const ps = pickerState[p.id] ||= { query: "", mine: false, language: "zh", page: 1, result: null, loading: false, names: {} };
+  const s = state.sections.find((x) => x.id === p.section_id);
+  const valueOf = (key) => s?.fields.find((f) => f.key === key)?.value || "";
+  const current = h("div", { class: "card", style: "margin-bottom:16px" }, p.targets.map((t) => {
+    const v = valueOf(t.key);
+    const label = s?.fields.find((f) => f.key === t.key)?.label || t.key;
+    return h("div", { class: "row" },
+      h("div", {}, h("span", { class: "name" }, label)),
+      h("div", { class: "inline" },
+        h("span", { style: "flex:1;word-break:break-all" }, v ? (ps.names[v] ? `${ps.names[v]}（${v}）` : v) : "未设置"),
+        v ? h("button", { class: "btn", type: "button", onclick: () => assignPick(p, t.key, { value: "", title: "未设置" }) }, "清除") : null));
+  }));
+
+  const query = h("input", { type: "search", value: ps.query, placeholder: "按名字搜索，留空看热门", "aria-label": "搜索", spellcheck: "false",
+    oninput: (e) => { ps.query = e.target.value; } });
+  const language = h("select", { "aria-label": "语言", style: "width:auto", onchange: (e) => { ps.language = e.target.value; } },
+    [["", "全部语言"], ["zh", "中文"], ["ja", "日语"], ["en", "英语"]].map(([v, l]) => h("option", { value: v, selected: v === ps.language }, l)));
+  const mine = h("label", { class: "inline", style: "white-space:nowrap" },
+    h("input", { type: "checkbox", checked: ps.mine, onchange: (e) => { ps.mine = e.target.checked; } }), "只看我的");
+  const go = h("button", { class: "btn primary", type: "submit", disabled: ps.loading }, ps.loading ? "搜索中…" : "搜索");
+  const form = h("form", { class: "inline", style: "margin-bottom:16px;flex-wrap:wrap", onsubmit: (e) => { e.preventDefault(); searchPicker(p, 1); } },
+    h("div", { style: "flex:1;min-width:180px" }, query), language, mine, go);
+
+  let list;
+  const r = ps.result;
+  if (!r) list = h("div", { class: "empty" }, "点「搜索」开始。需要先在「" + (s?.title || p.section_id) + "」里保存 API Key。");
+  else if (!r.items.length) list = h("div", { class: "empty" }, "没有找到");
+  else {
+    const assigned = new Set(p.targets.map((t) => valueOf(t.key)).filter(Boolean));
+    list = h("div", {},
+      h("div", { class: "card" }, r.items.map((item) => h("div", { class: "row" },
+        h("div", {},
+          h("div", { class: "name", style: "padding-top:0;word-break:break-all" }, item.title),
+          assigned.has(item.value) ? h("div", { class: "meta" }, h("span", { class: "badge saved" }, "正在使用")) : null),
+        h("div", {},
+          item.detail ? h("div", { class: "help", style: "margin-top:0" }, item.detail) : null,
+          item.sample ? h("audio", { controls: true, preload: "none", src: item.sample, style: "width:100%;margin-top:6px" }) : null,
+          h("div", { class: "inline", style: "margin-top:8px;flex-wrap:wrap" },
+            p.targets.map((t) => h("button", { class: "btn", type: "button", disabled: valueOf(t.key) === item.value,
+              onclick: () => assignPick(p, t.key, item) }, t.label))))))),
+      h("div", { class: "inline", style: "justify-content:center;margin-top:16px" },
+        h("button", { class: "btn", type: "button", disabled: ps.loading || ps.page <= 1, onclick: () => searchPicker(p, ps.page - 1) }, "上一页"),
+        h("span", { class: "help", style: "margin:0" }, `第 ${ps.page} 页` + (r.total ? `，共 ${r.total} 个` : "")),
+        h("button", { class: "btn", type: "button", disabled: ps.loading || !r.has_more, onclick: () => searchPicker(p, ps.page + 1) }, "下一页")));
+  }
+  main.replaceChildren(
+    h("div", { class: "head" }, h("div", {}, h("h2", {}, p.title), p.description ? h("p", {}, p.description) : null)),
+    current, form, list);
+}
+
 function renderMain() {
-  const s = section();
   const main = document.querySelector("main");
+  const p = currentPicker();
+  if (p) return renderPicker(p, main);
+  const s = section();
   if (!s) { main.replaceChildren(h("div", { class: "empty" }, "没有可配置的项目")); return; }
   const testBtn = s.testable ? h("button", { class: "btn", type: "button", onclick: async () => {
     if (dirty()) return toast("请先保存修改，再测试连接", false);
@@ -433,7 +518,11 @@ function renderNav() {
   nav.replaceChildren(...state.sections.map((s) => h("button", {
     type: "button", "aria-current": s.id === state.current ? "true" : "false",
     onclick: () => switchTo(s.id),
-  }, s.title, s.id === state.current && dirty() ? h("span", { class: "dot", "aria-label": "有未保存的修改" }) : null)));
+  }, s.title, s.id === state.current && dirty() ? h("span", { class: "dot", "aria-label": "有未保存的修改" }) : null)),
+  ...state.pickers.map((p) => h("button", {
+    type: "button", "aria-current": PICKER + p.id === state.current ? "true" : "false",
+    onclick: () => switchTo(PICKER + p.id),
+  }, p.title)));
 }
 
 function updateChrome() {
@@ -505,8 +594,10 @@ async function load() {
   const r = await api("/settings").catch(() => null);
   if (!r || !r.ok) return;
   state.sections = r.sections;
+  state.pickers = r.pickers || [];
   const fromHash = decodeURIComponent(location.hash.slice(1));
-  state.current = state.sections.some((s) => s.id === fromHash) ? fromHash : state.sections[0]?.id;
+  const known = state.sections.some((s) => s.id === fromHash) || state.pickers.some((p) => PICKER + p.id === fromHash);
+  state.current = known ? fromHash : state.sections[0]?.id;
   renderApp();
 }
 
