@@ -227,3 +227,108 @@ def test_rinne_tools_build_context():
     private = mod.build_context({"message": {**message, "message_info": {"user_info": {"user_id": "42"}}}})
     assert private["group_id"] is None and private["image_urls"]
     assert mod.build_context({}) is None
+    bot_self = {**message, "message_info": {"user_info": {"user_id": "3974127672"}}}
+    assert mod.build_context(bot_self) is None
+
+
+def _tools_plugin(mod, messages):
+    from types import SimpleNamespace
+
+    logs: list[str] = []
+    queries: list[tuple[str, str]] = []
+
+    async def get_by_id(message_id, *, stream_id=""):
+        queries.append((message_id, stream_id))
+        return {"success": True, "message": messages.get(message_id)}
+
+    plugin = mod.RinneToolsPlugin()
+    logger = SimpleNamespace(
+        info=lambda *a: logs.append(a[0] % a[1:]), warning=lambda *a: logs.append(a[0] % a[1:]),
+        debug=lambda *a: None,
+    )
+    plugin._set_context(SimpleNamespace(message=SimpleNamespace(get_by_id=get_by_id), logger=logger))
+    return plugin, logs, queries
+
+
+def test_rinne_tools_resolves_sender_from_msg_id():
+    """MaiBot 1.3 调用工具时只给 stream_id/group_id，不给消息本身，要按 msg_id 查。"""
+    mod = _load_rinne_tools()
+    info = {"user_info": {"user_id": "1196477724", "user_cardname": "千树与梦"},
+            "group_info": {"group_id": "123456"}}
+    messages = {
+        "555": {"message_id": "555", "account_id": "3974127672", "message_info": info,
+                "raw_message": [{"type": "reply", "data": {"target_message_id": "554"}},
+                                {"type": "text", "data": "照着这张画"}]},
+        "554": {"message_id": "554", "message_info": info,
+                "raw_message": [{"type": "image", "data": "https://gchat.qpic.cn/q"}]},
+    }
+    plugin, _, queries = _tools_plugin(mod, messages)
+    group_kwargs = {"stream_id": "s1", "chat_id": "s1", "group_id": "123456", "platform": "qq"}
+
+    ctx, _ = asyncio.run(plugin._resolve_context({**group_kwargs, "msg_id": "555"}))
+    assert ctx == {"user_id": "1196477724", "group_id": "123456", "user_name": "千树与梦",
+                   "message_id": "555", "image_urls": ["https://gchat.qpic.cn/q"]}
+    assert queries == [("555", "s1"), ("554", "s1")]
+
+    # 群聊里没有 msg_id：不能猜是谁
+    ctx, reason = asyncio.run(plugin._resolve_context(group_kwargs))
+    assert ctx is None and "msg_id" in reason
+    ctx, reason = asyncio.run(plugin._resolve_context({**group_kwargs, "msg_id": "999"}))
+    assert ctx is None and "999" in reason
+
+    # 私聊：聊天流里的 user_id 就是对方
+    ctx, _ = asyncio.run(plugin._resolve_context({"stream_id": "s2", "user_id": "1196477724", "msg_id": "999"}))
+    assert ctx["user_id"] == "1196477724" and ctx["group_id"] is None
+
+
+def test_rinne_tools_call_logs_and_skips_unknown_requester():
+    mod = _load_rinne_tools()
+    plugin, logs, _ = _tools_plugin(mod, {})
+    cfg = mod.RinneToolsConfig()
+    cfg.plugin.token = TOKEN
+    plugin._cfg = lambda: cfg
+    result = asyncio.run(plugin.rinne_selfie(scene="办公室", stream_id="s1", group_id="123456"))
+    assert result["success"] is False and "msg_id" in result["content"]
+    assert any("selfie 未执行" in line for line in logs)
+
+
+def test_rinne_tools_msg_id_not_forwarded(monkeypatch):
+    mod = _load_rinne_tools()
+    info = {"user_info": {"user_id": "1196477724"}, "group_info": {"group_id": "123456"}}
+    plugin, _, _ = _tools_plugin(mod, {"555": {"message_id": "555", "message_info": info, "raw_message": []}})
+    cfg = mod.RinneToolsConfig()
+    cfg.plugin.token = TOKEN
+    plugin._cfg = lambda: cfg
+    sent = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            sent.update(url=url, body=json)
+            return type("R", (), {"json": lambda self: {"ok": True, "content": "开始拍了"}})()
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", FakeClient)
+    result = asyncio.run(plugin.rinne_selfie(scene="办公室", msg_id="555", stream_id="s1", group_id="123456"))
+    assert result == {"success": True, "content": "开始拍了"}
+    assert sent["url"].endswith("/tools/selfie")
+    assert sent["body"]["args"] == {"scene": "办公室"}
+    assert sent["body"]["user_id"] == "1196477724" and sent["body"]["message_id"] == "555"
+
+
+def test_rinne_tools_declare_msg_id():
+    mod = _load_rinne_tools()
+    from maibot_sdk.components import collect_components
+
+    tools = [c for c in collect_components(mod.RinneToolsPlugin()) if c.get("type", "").upper() == "TOOL"
+             or c.get("component_type", "").upper() == "TOOL"]
+    assert tools
+    for tool in tools:
+        assert "msg_id" in json.dumps(tool, ensure_ascii=False, default=str), tool.get("name")

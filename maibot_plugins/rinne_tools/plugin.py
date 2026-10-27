@@ -90,13 +90,21 @@ def _image_urls(raw: Any) -> list[str]:
     return urls
 
 
+def _reply_target(raw: Any) -> str:
+    """取消息里引用的那条消息的 ID（MaiBot 1.3 的 reply 段不带被引用消息的图片）。"""
+    for seg in raw if isinstance(raw, list) else []:
+        if isinstance(seg, dict) and seg.get("type") == "reply" and isinstance(seg.get("data"), dict):
+            return str(seg["data"].get("target_message_id") or "").strip()
+    return ""
+
+
 def build_context(message: Any) -> dict[str, Any] | None:
     """把触发工具的消息转成 NoneBot 需要的上下文：谁、在哪个群、带了什么图。"""
     msg = _unwrap(message)
     info = msg.get("message_info") or {}
     user = info.get("user_info") or {}
     user_id = str(user.get("user_id") or "").strip()
-    if not user_id:
+    if not user_id or user_id == str(msg.get("account_id") or "").strip():
         return None
     group = info.get("group_info")
     group_id = str(group.get("group_id") or "").strip() if isinstance(group, dict) else ""
@@ -151,6 +159,12 @@ PIXIV_DETAIL = (
 DAILY_DESC = "从 Pixiv 给对方挑一张今日推荐。对方说想看看今天的图、每日一图时使用。"
 
 
+def _msg_id_param() -> ToolParameterInfo:
+    # NoneBot 要知道是谁在请求、结果引用哪条消息，所以每个工具都要模型填 msg_id
+    return ToolParameterInfo(name="msg_id", param_type=ToolParamType.STRING,
+                             description="对方提出这个请求的那条消息的 msg_id", required=True)
+
+
 class RinneToolsPlugin(MaiBotPlugin):
     config_model = RinneToolsConfig
 
@@ -169,6 +183,43 @@ class RinneToolsPlugin(MaiBotPlugin):
         except RuntimeError:
             return RinneToolsConfig()
 
+    async def _get_message(self, message_id: str, stream_id: str) -> Any:
+        try:
+            found = await self.ctx.message.get_by_id(message_id, stream_id=stream_id)
+        except Exception as e:
+            self.ctx.logger.warning("[凛音工具] 查询消息 %s 失败: %s", message_id, e)
+            return None
+        if isinstance(found, dict) and found.get("success") is False:
+            self.ctx.logger.warning("[凛音工具] 查询消息 %s 失败: %s", message_id, found.get("error"))
+            return None
+        return found
+
+    async def _resolve_context(self, kwargs: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        """找出是谁在请求。MaiBot 1.3 调用工具时不传消息本身，只能按模型给的 msg_id 去查。"""
+        ctx = build_context(kwargs.get("message"))
+        if ctx is not None:
+            return ctx, ""
+
+        stream_id = str(kwargs.get("stream_id") or kwargs.get("chat_id") or "").strip()
+        msg_id = str(kwargs.get("msg_id") or "").strip()
+        if msg_id:
+            msg = _unwrap(await self._get_message(msg_id, stream_id))
+            ctx = build_context(msg)
+            if ctx is not None:
+                target = _reply_target(msg.get("raw_message"))
+                if not ctx["image_urls"] and target:
+                    quoted = _unwrap(await self._get_message(target, stream_id))
+                    ctx["image_urls"] = _image_urls(quoted.get("raw_message"))[:4]
+                return ctx, ""
+
+        user_id = str(kwargs.get("user_id") or "").strip()
+        if user_id and not str(kwargs.get("group_id") or "").strip():
+            # 私聊：聊天流本身就记录了对方是谁
+            return {"user_id": user_id, "group_id": None, "user_name": "", "message_id": None, "image_urls": []}, ""
+        if msg_id:
+            return None, f"找不到消息 {msg_id}（会话 {stream_id or '未知'}），或发送者是机器人自己"
+        return None, "群聊里模型没有填 msg_id"
+
     async def _call(self, tool: str, switch: str, args: dict[str, Any], kwargs: dict[str, Any]) -> dict[str, Any]:
         cfg = self._cfg()
         if not cfg.plugin.enabled or not getattr(cfg.tools, switch, False):
@@ -176,9 +227,10 @@ class RinneToolsPlugin(MaiBotPlugin):
         if not cfg.plugin.token.strip():
             return {"success": False, "content": "工具还没有配置好（缺少 token），请告诉对方现在做不到。"}
 
-        ctx = build_context(kwargs.get("message"))
+        ctx, reason = await self._resolve_context(kwargs)
         if ctx is None:
-            return {"success": False, "content": "不知道是谁在请求，这次做不到。"}
+            self.ctx.logger.warning("[凛音工具] %s 未执行：%s", tool, reason)
+            return {"success": False, "content": "不知道是谁在请求。请在 msg_id 里填对方那条消息的 msg_id 后重新调用。"}
 
         args = {k: v for k, v in args.items() if v not in (None, "")}
         url = f"{cfg.plugin.nonebot_url.rstrip('/')}/tools/{tool}"
@@ -212,6 +264,7 @@ class RinneToolsPlugin(MaiBotPlugin):
         brief_description=DRAW_DESC,
         detailed_description=DRAW_DETAIL,
         parameters=[
+            _msg_id_param(),
             ToolParameterInfo(name="prompt", param_type=ToolParamType.STRING, description="画面描述", required=True),
             ToolParameterInfo(name="backend", param_type=ToolParamType.STRING, description="用哪个画",
                               required=False, enum_values=["default", "novelai", "gpt"], default="default"),
@@ -233,6 +286,7 @@ class RinneToolsPlugin(MaiBotPlugin):
         brief_description=SELFIE_DESC,
         detailed_description=SELFIE_DETAIL,
         parameters=[
+            _msg_id_param(),
             ToolParameterInfo(name="scene", param_type=ToolParamType.STRING, description="自拍的情景", required=True),
         ],
         core_tool=True,
@@ -245,6 +299,7 @@ class RinneToolsPlugin(MaiBotPlugin):
         brief_description=TTS_DESC,
         detailed_description=TTS_DETAIL,
         parameters=[
+            _msg_id_param(),
             ToolParameterInfo(name="text", param_type=ToolParamType.STRING, description="要说的话", required=True),
         ],
         core_tool=True,
@@ -257,6 +312,7 @@ class RinneToolsPlugin(MaiBotPlugin):
         brief_description=DICE_DESC,
         detailed_description=DICE_DETAIL,
         parameters=[
+            _msg_id_param(),
             ToolParameterInfo(name="faces", param_type=ToolParamType.INTEGER, description="面数",
                               required=False, default=100),
             ToolParameterInfo(name="target", param_type=ToolParamType.INTEGER, description="目标值", required=False),
@@ -272,6 +328,7 @@ class RinneToolsPlugin(MaiBotPlugin):
         brief_description=PIXIV_DESC,
         detailed_description=PIXIV_DETAIL,
         parameters=[
+            _msg_id_param(),
             ToolParameterInfo(name="tags", param_type=ToolParamType.STRING, description="搜索标签", required=True),
             ToolParameterInfo(name="count", param_type=ToolParamType.INTEGER, description="张数",
                               required=False, default=1),
@@ -283,7 +340,7 @@ class RinneToolsPlugin(MaiBotPlugin):
                                  **kwargs: Any) -> dict[str, Any]:
         return await self._call("pixiv_search", "pixiv", {"tags": tags, "count": count, "mode": mode}, kwargs)
 
-    @Tool("rinne_pixiv_daily", brief_description=DAILY_DESC)
+    @Tool("rinne_pixiv_daily", brief_description=DAILY_DESC, parameters=[_msg_id_param()])
     async def rinne_pixiv_daily(self, **kwargs: Any) -> dict[str, Any]:
         return await self._call("pixiv_daily", "pixiv", {}, kwargs)
 
