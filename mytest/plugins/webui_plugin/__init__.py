@@ -5,6 +5,8 @@
     WEBUI_SECURE_COOKIE=true               # 可选，用 HTTPS 反代访问时打开
 """
 
+import os
+
 from nonebot import get_app, get_driver, logger
 from nonebot.drivers import ASGIMixin
 from nonebot.plugin import PluginMetadata
@@ -26,7 +28,12 @@ settings_store.set_tester("llm", test_connection)
 
 
 def _config_value(name: str) -> str:
-    return str(getattr(get_driver().config, name, "") or "").strip()
+    # NoneBot 只把工作目录下 .env 文件里的未声明配置放进 config；
+    # docker-compose 用 env_file / environment 传进来的只是环境变量，要单独读。
+    value = getattr(get_driver().config, name, None)
+    if value in (None, ""):
+        value = os.environ.get(name.upper(), "")
+    return str(value or "").strip()
 
 
 def _disabled_reason() -> str:
