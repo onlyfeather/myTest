@@ -405,13 +405,16 @@ def test_rinne_tools_declare_msg_id():
 def test_qzone_ai_flavor_checks():
     from mytest.plugins.tools_api_plugin.qzone import ai_flavor_problems
 
-    assert ai_flavor_problems("红茶罐见底了。明明上周才买的。") == []
-    assert ai_flavor_problems("下班。头发终于可以放下来了") == []
+    from mytest.plugins.tools_api_plugin.qzone import EXAMPLES
+
+    for example in EXAMPLES.split("\n\n"):
+        assert ai_flavor_problems(example) == [], example
+    assert any("太短" in p for p in ai_flavor_problems("红茶罐见底了。明明上周才买的。"))
     assert ai_flavor_problems("今天也要加油哦～")
     assert ai_flavor_problems("这不是普通的下午，而是属于自己的时间")
     assert ai_flavor_problems("好冷！好冷！")
     assert ai_flavor_problems("大家今天吃什么？")
-    assert ai_flavor_problems("字" * 141)
+    assert ai_flavor_problems("字" * 261)
     assert ai_flavor_problems("下雨了☔🌧")
 
 
@@ -447,20 +450,29 @@ def _qzone_env(monkeypatch, tmp_path, replies):
     return qzone, calls
 
 
+LONG_POST = ("停电了。银器只擦了一半，剩下的只能摸黑擦，擦完也看不出亮没亮。蜡烛翻了半个储物间才找到两根，"
+             "一根还是生日蛋糕上拔下来的。冰箱里的黄油大概撑不到来电，晚饭只好改成冷的三明治。"
+             "楼下有人在喊物业，喊了三遍，没人应")
+
+
 def test_qzone_write_post_retries_ai_flavor(monkeypatch, tmp_path):
-    good = '{"text": "停电了。银器只擦了一半", "mood": "有点烦", "scene": "烛光下擦银器"}'
+    good = json.dumps({"text": LONG_POST, "mood": "有点烦", "scene": "烛光下擦银器"}, ensure_ascii=False)
     qzone, calls = _qzone_env(monkeypatch, tmp_path, [
-        '{"text": "生活就是这样美好～", "mood": "开心", "scene": "窗边"}', good,
+        '{"text": "生活就是这样美好～", "mood": "开心", "scene": "窗边"}',
+        '{"text": "停电了。银器只擦了一半", "mood": "有点烦", "scene": "烛光下擦银器"}', good,
     ])
     qzone.remember("红茶罐见底了。")
     post = asyncio.run(qzone.write_post(mood="有点烦"))
-    assert post.text == "停电了。银器只擦了一半"
-    assert len(calls) == 2
+    assert post.text == LONG_POST
+    assert len(calls) == 3
     system, user = calls[0][0]["content"], calls[0][1]["content"]
     assert "白鸟" in system and "红茶罐见底了。" in system
     assert "有点烦" in user
     # 第二次请求带上了要改的地方
-    assert "生活就是" in calls[1][-1]["content"]
+    retries = [m["content"] for m in calls[-1] if m["role"] == "user"][1:]
+    assert "生活就是" in retries[0]
+    # 太短也要重写
+    assert "太短" in retries[1]
     # 写成了也不记历史：自拍画好之后才记
     assert [h["text"] for h in qzone.load_history()] == ["红茶罐见底了。"]
 
@@ -468,7 +480,8 @@ def test_qzone_write_post_retries_ai_flavor(monkeypatch, tmp_path):
 def test_qzone_slot_prompts(monkeypatch, tmp_path):
     from datetime import datetime
 
-    reply = '{"event": "睡前发现明天要熨的衬衫还没收", "text": "衬衫还挂在外面。算了，明早再收", "mood": "困", "scene": "睡衣"}'
+    reply = json.dumps({"event": "睡前发现明天要熨的衬衫还没收", "text": LONG_POST, "mood": "困", "scene": "睡衣"},
+                       ensure_ascii=False)
     qzone, calls = _qzone_env(monkeypatch, tmp_path, [reply] * 3)
     night = datetime(2026, 10, 28, 23, 10, tzinfo=qzone.BEIJING)
     post = asyncio.run(qzone.write_post(slot="bedtime", now=night))
