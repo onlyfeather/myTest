@@ -5,14 +5,10 @@ from .config import tts_settings
 
 def _detail() -> str:
     text = "/说 文字 - 让凛音读出来\n例：/说 欢迎回来，主人"
-    if fish_audio.supports_directions(str(tts_settings.model)):
-        text += (
-            "\n\n可以用半角方括号写情感提示，写在句子开头：\n"
-            "例：/说 [冷淡，有点不耐烦] 请您自重。[sighing]\n"
-            "常用：[happy] [sad] [whispering] [laughing] [break]"
-        )
+    if str(tts_settings.model) == fish_audio.DRAMA_MODEL:
+        text += "\n\n可以用半角方括号指导语气：\n例：/说 [冷淡，有点不耐烦] 请您自重。[sigh]"
     text += f"\n\n单次最多 {int(tts_settings.max_chars)} 个字（方括号里的不算），每人有冷却时间。"
-    return text + "\n\n不用指令也行：直接跟凛音说「用语音跟我说晚安」，她会自己配上语气。"
+    return text + "\n\n不用指令也行：直接跟凛音说「用语音跟我说晚安」。"
 
 
 help_registry.register(

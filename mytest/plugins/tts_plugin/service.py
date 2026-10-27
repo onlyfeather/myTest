@@ -8,7 +8,7 @@ from .config import tts_settings
 
 # 骰娘点评里的动作描写（括号里的内容）和表情符号读出来很怪，合成前去掉。
 _BRACKETS = re.compile(r"[（(【\[*][^）)】\]*]{0,40}[）)】\]*]")
-# S2 系列和 Drama 3 把 [半角方括号] 当作情感和演绎提示（语气、停顿、叹气、唱歌等），要保留下来。
+# Drama 3 把 [半角方括号] 当作演绎指导（语气、停顿、叹气等），要保留下来。
 _BRACKETS_KEEP_DIRECTIONS = re.compile(r"[（(【*][^）)】*]{0,40}[）)】*]")
 _SYMBOLS = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF~～]+")
 _DIRECTION = re.compile(r"\[[^\]]*\]")
@@ -47,11 +47,11 @@ def is_ready() -> bool:
 async def synthesize(text: str, *, superuser: bool = False) -> bytes:
     """superuser 可以唱歌、说大段的话；其他人唱歌会被拒绝，字数按 max_chars 限制。"""
     s = tts_settings
-    text = speakable(text, keep_directions=fish_audio.supports_directions(str(s.model)))
-    if not text:
-        raise ServiceError("没有可以朗读的文字")
     if not superuser and is_singing(text):
         raise ServiceError("唱歌只有管理员可以用")
+    text = speakable(text, keep_directions=str(s.model) == fish_audio.DRAMA_MODEL)
+    if not text:
+        raise ServiceError("没有可以朗读的文字")
     limit = char_limit(superuser=superuser)
     if spoken_length(text) > limit:
         hint = "" if superuser else "，大段语音只有管理员可以用"

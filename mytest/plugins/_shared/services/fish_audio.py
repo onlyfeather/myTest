@@ -17,11 +17,6 @@ MODELS = (
     ("s2-pro", "S2 Pro"),
 )
 
-def supports_directions(model: str) -> bool:
-    """S2、S2.1、Drama 3 都把 [半角方括号] 当作情感和演绎提示；只有已弃用的 S1 用圆括号。"""
-    return not model.strip().lower().startswith("s1")
-
-
 FORMATS = (
     ("mp3", "MP3"),
     ("wav", "WAV"),

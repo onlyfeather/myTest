@@ -55,14 +55,6 @@ def test_speakable_drama3_keeps_directions():
     assert speakable("[whisper]（小声）", keep_directions=True) == "", "directions alone are not speakable"
 
 
-def test_s2_models_keep_emotion_tags():
-    from mytest.plugins._shared.services import fish_audio
-
-    for model, _ in fish_audio.MODELS:
-        assert fish_audio.supports_directions(model), model
-    assert not fish_audio.supports_directions("s1")
-
-
 def test_singing_and_long_text_need_superuser(monkeypatch):
     import asyncio
     from types import SimpleNamespace
@@ -74,7 +66,7 @@ def test_singing_and_long_text_need_superuser(monkeypatch):
     from mytest.plugins.tts_plugin import service
 
     monkeypatch.setattr(service, "tts_settings", SimpleNamespace(
-        model="s2.1-pro", max_chars=10, superuser_max_chars=50, api_key="k", base_url="https://x",
+        model=fish_audio.DRAMA_MODEL, max_chars=10, superuser_max_chars=50, api_key="k", base_url="https://x",
         reference_id="", format="mp3", speed=1.0, volume=0.0, proxy="", timeout=5.0,
     ))
     sent = []
