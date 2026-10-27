@@ -8,8 +8,11 @@ from .http import ServiceError, describe_http_error, http_client
 
 NAME = "Fish Audio"
 
+DRAMA_MODEL = "drama-3"
+
 MODELS = (
     ("s2.1-pro", "S2.1 Pro"),
+    (DRAMA_MODEL, "Drama 3（可用 [语气描述] 指导演绎）"),
     ("s2.1-pro-free", "S2.1 Pro Free（免费开发者额度）"),
     ("s2-pro", "S2 Pro"),
 )

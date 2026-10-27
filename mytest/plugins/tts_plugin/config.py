@@ -13,7 +13,8 @@ tts_settings = register(
                          help="fish.audio → API Keys"),
             SettingField("base_url", "接口地址", default="https://api.fish.audio",
                          help="不带 /v1"),
-            SettingField("model", "模型", type="select", default="s2.1-pro", options=fish_audio.MODELS),
+            SettingField("model", "模型", type="select", default="s2.1-pro", options=fish_audio.MODELS,
+                         help="Drama 3 可以在文字里用半角方括号写演绎指导，例如 /说 [冷淡又有点不耐烦] 请您自重"),
             SettingField(
                 "reference_id",
                 "音色",

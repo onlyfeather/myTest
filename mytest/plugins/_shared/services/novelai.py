@@ -12,13 +12,22 @@ from .http import ServiceError, describe_http_error, http_client
 
 NAME = "NovelAI"
 
+MEDIUM_MODEL = "nai-diffusion-5-full-medium"
+
 MODELS = (
+    ("nai-diffusion-5-full", "V5 Full"),
+    (MEDIUM_MODEL, "V5 Full 节约模式（14 步，更省点数）"),
+    ("nai-diffusion-5-curated", "V5 Curated"),
     ("nai-diffusion-4-5-full", "V4.5 Full"),
     ("nai-diffusion-4-5-curated", "V4.5 Curated"),
     ("nai-diffusion-4-full", "V4 Full"),
     ("nai-diffusion-3", "Anime V3"),
 )
-# NovelAI V5 已上线，但 API 参数和 V4.5 有差异，未验证前不放进选项。
+
+# 节约模式（Medium effort）是独立的蒸馏模型，只能 14 步 + Euler Ancestral，
+# 不支持自定义负面提示词（官方固定预设）。
+MEDIUM_STEPS = 14
+MEDIUM_SAMPLER = "k_euler_ancestral"
 
 SAMPLERS = (
     ("k_euler_ancestral", "Euler Ancestral"),
@@ -48,25 +57,34 @@ class NovelAIRequest:
     seed: int | None = None
 
 
+def is_v5(model: str) -> bool:
+    return model.startswith("nai-diffusion-5")
+
+
 def build_payload(req: NovelAIRequest) -> dict[str, Any]:
     seed = req.seed if req.seed is not None else random.randint(0, 2**32 - 1)
+    medium = req.model == MEDIUM_MODEL
+    negative = "" if medium else req.negative
     parameters: dict[str, Any] = {
-        "params_version": 3,
+        "params_version": 4 if is_v5(req.model) else 3,
         "width": req.width,
         "height": req.height,
         "scale": req.scale,
-        "sampler": req.sampler,
-        "steps": req.steps,
+        "sampler": MEDIUM_SAMPLER if medium else req.sampler,
+        "steps": MEDIUM_STEPS if medium else req.steps,
         "seed": seed,
         "n_samples": 1,
         "noise_schedule": "karras",
-        "uc": req.negative,
+        "uc": negative,
         "qualityToggle": False,
         "legacy": False,
         "legacy_v3_extend": False,
     }
-    if req.model.startswith("nai-diffusion-4"):
-        # V4 / V4.5 必须带结构化提示词，没有角色时 char_captions 传空数组。
+    if medium:
+        parameters["cfg_rescale"] = 0
+    if req.model.startswith(("nai-diffusion-4", "nai-diffusion-5")):
+        # V4 / V4.5 / V5 必须带结构化提示词（V5 字段名仍是 v4_prompt），没有角色时 char_captions 传空数组。
+        req = NovelAIRequest(**{**req.__dict__, "negative": negative})
         parameters.update(
             {
                 "legacy_uc": False,

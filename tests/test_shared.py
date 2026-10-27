@@ -178,8 +178,30 @@ def test_novelai_payload_v45():
     assert p["seed"] == 7 and p["n_samples"] == 1 and p["uc"] == "lowres"
     assert p["v4_prompt"]["caption"] == {"base_caption": "1girl", "char_captions": []}
     assert p["v4_negative_prompt"]["caption"] == {"base_caption": "lowres", "char_captions": []}
+    assert p["params_version"] == 3
     v3 = novelai.build_payload(novelai.NovelAIRequest("a", "b", "nai-diffusion-3", 832, 1216, 28, 5, "k_euler"))
     assert "v4_prompt" not in v3["parameters"]
+
+
+def test_novelai_payload_v5():
+    full = novelai.build_payload(
+        novelai.NovelAIRequest("1girl", "lowres", "nai-diffusion-5-full", 832, 1216, 28, 5.0, "k_dpmpp_2m", 1)
+    )
+    p = full["parameters"]
+    assert full["model"] == "nai-diffusion-5-full" and p["params_version"] == 4
+    assert p["steps"] == 28 and p["sampler"] == "k_dpmpp_2m" and p["uc"] == "lowres"
+    assert p["v4_prompt"]["caption"]["char_captions"] == []
+    assert p["v4_negative_prompt"]["caption"] == {"base_caption": "lowres", "char_captions": []}
+
+    medium = novelai.build_payload(
+        novelai.NovelAIRequest("1girl", "lowres", novelai.MEDIUM_MODEL, 832, 1216, 28, 5.0, "k_dpmpp_2m", 1)
+    )
+    m = medium["parameters"]
+    assert medium["model"] == "nai-diffusion-5-full-medium" and m["params_version"] == 4
+    assert (m["steps"], m["sampler"], m["cfg_rescale"]) == (14, "k_euler_ancestral", 0), "medium constraints enforced"
+    assert m["uc"] == "" and m["v4_negative_prompt"]["caption"]["base_caption"] == "", "medium ignores custom negative"
+    assert m["v4_prompt"]["caption"]["base_caption"] == "1girl"
+    assert {v for v, _ in novelai.MODELS} >= {"nai-diffusion-5-full", "nai-diffusion-5-curated", novelai.MEDIUM_MODEL}
 
 
 def test_novelai_generate(mock_http):

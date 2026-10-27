@@ -28,3 +28,16 @@ def test_tags():
 def test_speakable():
     assert speakable("（轻轻鼓掌）不愧是您～✨") == "不愧是您"
     assert speakable("*叹气* 好吧【小声】") == "好吧"
+    assert speakable("[sigh] 好吧") == "好吧"
+
+
+def test_speakable_drama3_keeps_directions():
+    text = "（轻轻鼓掌）[冷淡又有点不耐烦] 请您自重～ [sigh]"
+    assert speakable(text, keep_directions=True) == "[冷淡又有点不耐烦] 请您自重 [sigh]"
+    assert speakable("[whisper]（小声）", keep_directions=True) == "", "directions alone are not speakable"
+
+
+def test_drama3_listed():
+    from mytest.plugins._shared.services import fish_audio
+
+    assert fish_audio.DRAMA_MODEL in {v for v, _ in fish_audio.MODELS}
