@@ -151,6 +151,3 @@ Izumi_0503.json
 
 # MaiBot 插件运行时生成的配置
 maibot_plugins/*/config.toml
-
-# 聊天预设示例（NSFW / 强攻击力），只在本地导入，不上传
-mytest/plugins/_shared/presets/examples/

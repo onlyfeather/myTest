@@ -15,12 +15,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, HookHandler, MaiBotPlugin, PluginConfigBase, Tool
-from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder, ToolParameterInfo, ToolParamType
+from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 BEIJING = timezone(timedelta(hours=8))
 MAIZONE_API = "internetsb.maizone.send_feed_api"
-PRESET_MARKER = "【聊天预设】"
 
 # ---------------------------------------------------------------- 配置
 
@@ -70,22 +69,10 @@ class QzoneSection(PluginConfigBase):
     timeout: float = Field(default=300.0, description="写文案加画自拍的超时（秒）")
 
 
-class PresetSection(PluginConfigBase):
-    __ui_label__ = "聊天预设"
-    __ui_order__ = 3
-
-    enabled: bool = Field(
-        default=False,
-        description="回复前向 NoneBot 取聊天预设（NSFW / 强攻击力模式），预设内容和白名单在 NoneBot WebUI 的「聊天预设」里设置",
-    )
-    timeout: float = Field(default=3.0, description="取预设的超时（秒）。超时就按没有预设回复")
-
-
 class RinneToolsConfig(PluginConfigBase):
     plugin: GeneralSection = Field(default_factory=GeneralSection)
     tools: ToolsSection = Field(default_factory=ToolsSection)
     qzone: QzoneSection = Field(default_factory=QzoneSection)
-    preset: PresetSection = Field(default_factory=PresetSection)
 
 
 # ---------------------------------------------------------------- 消息解析
@@ -418,39 +405,6 @@ class RinneToolsPlugin(MaiBotPlugin):
             day += timedelta(days=1)
             midnight = datetime(day.year, day.month, day.day, tzinfo=BEIJING)
             await asyncio.sleep(max(0.0, (midnight - datetime.now(BEIJING)).total_seconds()) + 5)
-
-    # -------------------------------------------------------- 聊天预设
-
-    @HookHandler("maisaka.replyer.before_request", name="inject_preset", mode=HookMode.BLOCKING,
-                 order=HookOrder.EARLY, error_policy=ErrorPolicy.SKIP)
-    async def inject_preset(self, **kwargs: Any) -> dict[str, Any]:
-        """回复前问 NoneBot 这个会话开着哪些模式，把预设加进这次回复的额外要求。"""
-        cfg = self._cfg()
-        if not (cfg.plugin.enabled and cfg.preset.enabled and cfg.plugin.token.strip()):
-            return {"action": "continue"}
-        existing = str(kwargs.get("extra_prompt") or "")
-        if PRESET_MARKER in existing:  # 重试时已经加过
-            return {"action": "continue"}
-        reply_id = str(kwargs.get("reply_message_id") or "").strip()
-        if not reply_id:
-            return {"action": "continue"}
-        ctx = build_context(_unwrap(await self._get_message(reply_id, str(kwargs.get("session_id") or ""))))
-        if ctx is None:
-            return {"action": "continue"}
-        try:
-            data = await self._request("preset", {**ctx, "image_urls": [], "args": {}}, cfg.preset.timeout)
-        except (httpx.HTTPError, ValueError) as e:
-            self.ctx.logger.warning("[凛音工具] 取聊天预设失败: %s", e)
-            return {"action": "continue"}
-        prompt = str(data.get("prompt") or "").strip() if data.get("ok") else ""
-        if not prompt:
-            return {"action": "continue"}
-        modes = [str(m) for m in data.get("modes") or [] if re.fullmatch(r"[a-z_]+", str(m))]
-        self.ctx.logger.info("[凛音工具] 套用聊天预设 %s（用户 %s）", "、".join(modes), ctx["user_id"])
-        # 好感度插件读「生效模式」这一行决定怎么配合，所以要排在它前面运行（order=EARLY）
-        header = f"{PRESET_MARKER}生效模式：{','.join(modes)}"
-        kwargs["extra_prompt"] = f"{existing}\n\n{header}\n{prompt}".strip()
-        return {"action": "continue", "modified_kwargs": kwargs}
 
     # -------------------------------------------------------- 工具
 

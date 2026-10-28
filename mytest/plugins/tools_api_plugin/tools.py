@@ -394,17 +394,6 @@ async def tool_qzone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------- 聊天预设
-
-
-async def tool_preset(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    """MaiBot 每次回复前调用：这个会话要额外套用的预设提示词。没有生效的模式时 prompt 为空。"""
-    from .._shared.presets import prompt_for
-
-    prompt, modes = prompt_for(ctx.user_id, ctx.group_id, ctx.user_name)
-    return {"content": "", "prompt": prompt, "modes": modes}
-
-
 # ---------------------------------------------------------------- 注册表
 
 
@@ -461,6 +450,5 @@ TOOLS: dict[str, ToolSpec] = {
             },
             tool_qzone,
         ),
-        ToolSpec("preset", "取当前会话的聊天预设提示词（回复前调用，不是给凛音用的工具）", {}, tool_preset),
     )
 }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "onlyfeather.rinne-affinity",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "name": "凛音好感度",
   "description": "给白鸟凛音加上每人独立的好感度：回复前告诉她对方处于哪个关系阶段、她现在是上班还是下班、该怎么称呼；回复后由模型判断这次互动让好感度升还是降。",
   "author": {

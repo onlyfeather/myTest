@@ -11,25 +11,16 @@
 from __future__ import annotations
 
 import hmac
-import json
 import secrets
 import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .._shared.presets.core import (
-    MAX_FILE_BYTES,
-    PresetError,
-    PresetStore,
-    clean_entries,
-    parse_st_preset,
-)
 from .._shared.services.http import describe_exception
 from .._shared.settings import SettingsStore
 
@@ -114,7 +105,6 @@ def create_router(
     disabled_reason: Callable[[], str] | None = None,
     guard: LoginGuard | None = None,
     sessions: Sessions | None = None,
-    presets: PresetStore | None = None,
 ) -> APIRouter:
     def reason() -> str:
         if password():
@@ -204,75 +194,9 @@ def create_router(
         if not authed(request):
             return error(401, "请先登录")
         return JSONResponse(
-            {
-                "ok": True,
-                "sections": store.describe(),
-                "pickers": store.describe_pickers(),
-                "presets": presets.describe() if presets else [],
-            },
+            {"ok": True, "sections": store.describe(), "pickers": store.describe_pickers()},
             headers={"Cache-Control": "no-store"},
         )
-
-    def preset_guard(request: Request, mode_id: str) -> JSONResponse | None:
-        if not authed(request):
-            return error(401, "请先登录")
-        if not same_origin_write(request):
-            return error(403, "请求来源不正确")
-        if presets is None or mode_id not in {m["id"] for m in presets.describe()}:
-            return error(404, "没有这个模式")
-        return None
-
-    @router.post("/api/presets/{mode_id}/import", include_in_schema=False)
-    async def import_preset(mode_id: str, request: Request) -> JSONResponse:
-        if denied := preset_guard(request, mode_id):
-            return denied
-        assert presets is not None
-        if int(request.headers.get("content-length") or 0) > MAX_FILE_BYTES:
-            return error(413, f"文件太大了，最多 {MAX_FILE_BYTES // 1024 // 1024} MB")
-        data = b""
-        async for chunk in request.stream():
-            data += chunk
-            if len(data) > MAX_FILE_BYTES:
-                return error(413, f"文件太大了，最多 {MAX_FILE_BYTES // 1024 // 1024} MB")
-        try:
-            raw = json.loads(data.decode("utf-8-sig"))
-            entries, skipped = parse_st_preset(raw)
-        except (UnicodeDecodeError, ValueError) as e:
-            message = str(e) if isinstance(e, PresetError) else "不是合法的 JSON 文件"
-            return error(422, message)
-        name = str(request.headers.get("x-preset-name") or "").strip()
-        presets.save(mode_id, unquote(name) or "导入的预设", entries)
-        enabled = sum(e.enabled for e in entries)
-        message = f"已导入 {len(entries)} 条，启用 {enabled} 条"
-        if skipped:
-            message += f"；跳过了 {skipped} 条占位或空条目（聊天记录、角色卡等由 MaiBot 负责）"
-        return JSONResponse({"ok": True, "message": message, "preset": presets.describe_mode(mode_id)})
-
-    @router.put("/api/presets/{mode_id}", include_in_schema=False)
-    async def put_preset(mode_id: str, request: Request) -> JSONResponse:
-        if denied := preset_guard(request, mode_id):
-            return denied
-        assert presets is not None
-        try:
-            body = await request.json()
-        except ValueError:
-            return error(400, "请求格式不正确")
-        if not isinstance(body, dict):
-            return error(400, "请求格式不正确")
-        try:
-            entries = clean_entries(body.get("entries"))
-        except PresetError as e:
-            return error(422, str(e))
-        presets.save(mode_id, str(body.get("name") or ""), entries)
-        return JSONResponse({"ok": True, "preset": presets.describe_mode(mode_id)})
-
-    @router.delete("/api/presets/{mode_id}", include_in_schema=False)
-    async def delete_preset(mode_id: str, request: Request) -> JSONResponse:
-        if denied := preset_guard(request, mode_id):
-            return denied
-        assert presets is not None
-        presets.clear(mode_id)
-        return JSONResponse({"ok": True, "preset": presets.describe_mode(mode_id)})
 
     @router.post("/api/pickers/{picker_id}/search", include_in_schema=False)
     async def search_picker(picker_id: str, request: Request) -> JSONResponse:
