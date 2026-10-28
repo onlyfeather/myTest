@@ -28,10 +28,10 @@ selfie_settings = register(
                 "人设描述",
                 type="textarea",
                 default=(
-                    "1girl, solo, shirotori rinne, light blonde long hair, blue-grey eyes, "
-                    "maid outfit, white headdress, blue ribbon, selfie, looking at viewer"
+                    "1girl, solo, shirotori rinne, light blonde long hair, blue-grey eyes"
                 ),
-                help="每次自拍都会加上的固定描述（外貌、服装）。NovelAI 用英文 tag；GPT Image 也能读懂",
+                help="每次自拍都会加上的固定描述，只写外貌；服装、构图、看不看镜头由情景决定，写在这里会让每张图都一样。"
+                "NovelAI 用英文 tag；GPT Image 也能读懂",
             ),
             SettingField("novelai_model", "NovelAI 模型", type="select", default=novelai.REFERENCE_MODELS[0],
                          options=tuple(m for m in novelai.MODELS if novelai.supports_reference(m[0])),
@@ -113,8 +113,9 @@ async def take_selfie(scene: str) -> bytes:
     if str(selfie_settings.backend) == "gpt":
         s = gpt_image_settings
         prompt = (
-            "这是同一个角色的自拍照。保持参考图里角色的长相、发型、服装和画风完全一致，"
-            f"只改变场景、动作和表情。\n角色设定：{base}\n这次的情景：{scene}"
+            "这是同一个角色的照片。保持参考图里角色的长相、发色和画风一致；"
+            "服装、发型、姿势、表情、机位和取景都按这次的情景来，不要照搬参考图的站姿和构图。"
+            f"\n角色设定：{base}\n这次的情景：{scene}"
         )
         return await gpt_image.generate(
             prompt,

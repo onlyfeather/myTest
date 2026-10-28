@@ -133,7 +133,7 @@ EXAMPLES = (
 SELFIE = "selfie"
 PHOTO = "photo"
 SCENE_FORMATS = {
-    SELFIE: "配图自拍的情景：在哪、在做什么、穿什么、表情和姿势，要和正文、心情对得上",
+    SELFIE: "配图自拍的情景：在哪、在做什么、穿什么、表情、姿势和机位，要和正文、心情对得上",
     PHOTO: "配图是她随手拍的一样东西或一处景，画面里没有人：拍的是什么、在哪、光线和角度，要和正文对得上",
 }
 PHOTO_HINT = (
@@ -158,27 +158,45 @@ class Slot:
     label: str
     off_duty: bool
     hint: str
-    outfit: str  # 自拍时的穿着，拍东西时不用
+    outfits: tuple[str, ...]  # 自拍时的穿着和样子，每次抽一种；拍东西时不用
 
+
+SELFIE_HINT = "姿势和机位别总是正面站着看镜头，可以是对镜拍、俯拍、别人帮忙拍、侧身、背影、只拍到一部分。"
 
 # 定时说说的三个时段。MaiBot 插件到点后先判定发不发，通过了才按时段写
 SLOTS = {
     "work": Slot(
         "上午，工作中", False,
         "她正在工作，抽空发一条。先给她拟一件上午干活时真会碰到的小事（手上的家务、准备的东西、出的小岔子），再照着写。",
-        "配图是工作中的样子：女仆装，头发盘起，在宅子里干活的地方。",
+        (
+            "配图是工作中的样子：女仆装，头发盘起，在宅子里干活的地方。",
+            "配图是工作中抽空拍的：女仆装，袖子挽起来，在厨房揉面，手上还沾着面粉。",
+            "配图是工作中的样子：女仆装外面系着围裙，在院子里修剪花枝，戴着园艺手套。",
+            "配图是工作中对着走廊的镜子拍的：女仆装，正在整理头饰和缎带。",
+        ),
     ),
     "off_work": Slot(
         "傍晚，刚下班", True,
         "她刚下班，正从工作状态里切出来：解发带、松袖扣、回房间、吃晚饭。先给她拟一件刚下班那会儿的小事，再照着写，"
         "语气比上班时松，可以有点累。",
-        "配图是刚下班：女仆装还没换或刚换下，头发放下来扎成侧马尾。",
+        (
+            "配图是刚下班：女仆装还没换或刚换下，头发放下来扎成侧马尾。",
+            "配图是刚下班换了私服：针织开衫配长裙，侧马尾，窝在沙发里，腿上盖着毯子。",
+            "配图是下班出门：大衣、围巾、短靴，头发放下来，在街边或店门口。",
+            "配图是下班后在院子里：宽松卫衣配短裤，蹲着逗一只路过的猫。",
+            "配图是下班后在厨房：家居服，侧马尾，偷吃一块刚烤好的点心。",
+        ),
     ),
     "bedtime": Slot(
         "深夜，睡前", True,
         "她准备睡了。先给她拟一件睡前的小事或一个念头（明天的安排、没做完的活、窗外的声音、睡不着），再照着写，"
         "语气安静，可以困，想到哪说到哪。",
-        "配图是睡前：睡衣，头发放下，房间里只开着小灯。",
+        (
+            "配图是睡前：睡衣，头发放下，房间里只开着小灯。",
+            "配图是刚洗完澡：睡衣，头发还湿着，搭着毛巾在擦头发。",
+            "配图是睡前：睡衣外面披着开衫，盘腿坐在床上看书，台灯亮着。",
+            "配图是睡不着：睡衣，抱着枕头趴在床上，举着手机从上往下拍。",
+        ),
     ),
 }
 
@@ -308,7 +326,7 @@ def build_system_prompt(role: dict[str, Any], now: datetime, history: list[str],
 
 
 def build_user_prompt(now: datetime, topics: list[str], topic: str, mood: str, slot: Slot | None = None,
-                      length: Length = NORMAL, *, weather: str = "", photo: str = SELFIE) -> str:
+                      length: Length = NORMAL, *, weather: str = "", photo: str = SELFIE, outfit: str = "") -> str:
     when = f"{now.month}月{now.day}日，星期{WEEKDAYS[now.weekday()]}，{now.hour}点，{_season(now.month)}"
     if notes := day_notes(now.date()):
         when += f"，{'，'.join(notes)}"
@@ -319,7 +337,8 @@ def build_user_prompt(now: datetime, topics: list[str], topic: str, mood: str, s
         lines.append(f"这次要写的题材：{topic}")
     else:
         if slot:
-            lines.append(slot.hint + (slot.outfit if photo == SELFIE else ""))
+            look = (outfit or slot.outfits[0]) + SELFIE_HINT if photo == SELFIE else ""
+            lines.append(slot.hint + look)
         if topics:
             lead = "想不出来的话，可以从这里挑一个合这个时段的" if slot else "可以从这里挑一个"
             lines.append(f"{lead}，也可以写别的：{'、'.join(topics)}")
@@ -457,10 +476,11 @@ async def write_post(*, topic: str = "", mood: str = "", slot: str = "", now: da
     examples = pick_examples(length, rng)
     history = [_history_line(item, now) for item in load_history()[-5:]]
     weather = await current_weather(str(qzone_settings.city))
+    outfit = rng.choice(period.outfits) if period else ""
     messages = [
         {"role": "system", "content": build_system_prompt(_load_role(), now, history, period, examples, photo)},
         {"role": "user", "content": build_user_prompt(now, topics, topic, mood, period, length,
-                                                      weather=weather, photo=photo)},
+                                                      weather=weather, photo=photo, outfit=outfit)},
     ]
     model = str(qzone_settings.model).strip()
     problems: list[str] = []

@@ -750,6 +750,21 @@ def test_qzone_photo_prompts(monkeypatch, tmp_path):
     assert qzone.SCENE_FORMATS[qzone.SELFIE] in system
 
 
+def test_qzone_selfie_outfit_rotates(monkeypatch, tmp_path):
+    import random
+
+    reply = json.dumps({"text": LONG_POST, "mood": "累", "scene": "沙发"}, ensure_ascii=False)
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [reply] * 20)
+    evening = datetime(2026, 10, 28, 18, tzinfo=qzone.BEIJING)
+    rng = random.Random(1)
+    for _ in range(20):
+        asyncio.run(qzone.write_post(slot="off_work", now=evening, rng=rng))
+    users = [c[1]["content"] for c in calls]
+    picked = {o for o in qzone.SLOTS["off_work"].outfits for u in users if o in u}
+    assert len(picked) > 1, "每次从时段的几种穿着里抽一种"
+    assert all(qzone.SELFIE_HINT in u for u in users)
+
+
 def test_qzone_user_prompt_has_weather(monkeypatch, tmp_path):
     from mytest.plugins._shared.services.http import ServiceError
     from mytest.plugins.tools_api_plugin import weather
