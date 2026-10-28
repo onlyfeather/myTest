@@ -11,6 +11,7 @@ from nonebot import get_app, get_driver, logger
 from nonebot.drivers import ASGIMixin
 from nonebot.plugin import PluginMetadata
 
+from .._shared.presets import preset_store
 from .._shared.services.llm import list_models, test_connection
 from .._shared.settings import settings_store
 from .server import create_router
@@ -58,7 +59,8 @@ driver = get_driver()
 if isinstance(driver, ASGIMixin):
     get_app().include_router(
         create_router(
-            settings_store, _password, secure_cookie=_secure_cookie, disabled_reason=_disabled_reason
+            settings_store, _password, secure_cookie=_secure_cookie, disabled_reason=_disabled_reason,
+            presets=preset_store,
         )
     )
     if reason := _disabled_reason():
