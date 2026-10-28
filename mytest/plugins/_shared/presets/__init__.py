@@ -48,6 +48,10 @@ preset_settings = register(
         fields=[
             SettingField("char_name", "角色名", default="白鸟凛音", help="预设里的 {{char}} 会换成这个名字"),
             SettingField(
+                "prefix_enabled", "前置", type="bool", default=True, group="前置",
+                help="NSFW 或强攻击力模式生效时，把「预设：前置」页面的内容排在最前面一起发送；两个模式都没生效时不发送",
+            ),
+            SettingField(
                 "nsfw_enabled", "NSFW 模式", type="bool", default=False, group="NSFW 模式",
                 help="只在下面列出的私聊和群里生效。打开前请确认这些人和群里的成员都已成年",
             ),

@@ -597,9 +597,9 @@ function renderPreset(m, main) {
           oninput: (ev) => { d.name = ev.target.value; touchPreset(); } }),
         h("div", { class: "help" }, `共 ${d.entries.length} 条，启用 ${enabled} 条。开关和生效范围在「聊天预设」里设置。` +
           "支持 {{char}} {{user}} {{random}} 等常用宏；聊天记录、角色卡、世界书由 MaiBot 负责，导入时会跳过"))),
-    h("div", { class: "row" },
+    m.guard ? h("div", { class: "row" },
       h("span", { class: "name" }, "固定附加"),
-      h("div", { class: "help", style: "margin-top:7px" }, m.guard + "（每次都附在预设后面，不能关闭）")));
+      h("div", { class: "help", style: "margin-top:7px" }, m.guard + "（每次都附在预设后面，不能关闭）")) : null);
   const list = d.entries.length
     ? h("div", { class: "card" }, d.entries.map((e, i) => entryRow(d, e, i)))
     : h("div", { class: "empty" }, "还没有预设。在酒馆里导出「对话补全预设」的 JSON，再点「导入酒馆预设」。");

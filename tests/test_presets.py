@@ -117,6 +117,26 @@ def test_store_roundtrip_and_build_prompt(tmp_path):
     assert build_prompt(reloaded, cfg, "111", None, char="凛音", user="千树") == ("", [])
 
 
+def test_prefix_only_with_an_active_mode(tmp_path):
+    store = PresetStore(tmp_path / "presets.json")
+    store.save("prefix", "", clean_entries([{"content": "前置给{{char}}"}]))
+    store.save("aggressive", "", clean_entries([{"content": "开喷"}]))
+    cfg = {"prefix_enabled": True, "aggressive_enabled": True, "aggressive_groups": [], "nsfw_enabled": False}
+
+    prompt, used = build_prompt(store, cfg, "111", None, char="凛音", user="千树")
+    assert used == ["prefix", "aggressive"]
+    assert prompt.startswith("前置给凛音\n\n【强攻击力模式】\n开喷"), "prefix goes first, raw, no title"
+    assert "【前置】" not in prompt
+
+    assert build_prompt(store, cfg, "111", "999", char="凛音", user="千树") == ("", []), \
+        "no mode active in this group, so no prefix either"
+    prompt, used = build_prompt(store, {**cfg, "prefix_enabled": False}, "111", None, char="凛音", user="千树")
+    assert used == ["aggressive"] and "前置" not in prompt
+    store.save("aggressive", "", [])
+    assert build_prompt(store, cfg, "111", None, char="凛音", user="千树") == ("", []), \
+        "a mode with no enabled entries does not pull the prefix in"
+
+
 def test_store_ignores_broken_entries(tmp_path):
     path = tmp_path / "presets.json"
     path.write_text(json.dumps({"nsfw": {"entries": [{"role": "bad"}]}, "unknown": {}, "aggressive": {
@@ -189,9 +209,9 @@ def test_webui_preset_endpoints(tmp_path):
     assert client.post("/webui/api/presets/nsfw/import", content=big, headers=HEAD).status_code == 413
 
     presets = client.get("/webui/api/settings").json()["presets"]
-    assert [m["id"] for m in presets] == ["nsfw", "aggressive"] and len(presets[0]["entries"]) == 4
+    assert [m["id"] for m in presets] == ["prefix", "nsfw", "aggressive"] and len(presets[1]["entries"]) == 4
 
-    entries = presets[0]["entries"][::-1]
+    entries = presets[1]["entries"][::-1]
     entries[0]["enabled"] = True
     r = client.put("/webui/api/presets/nsfw", json={"name": "改过", "entries": entries}, headers=HEAD)
     assert r.status_code == 200 and r.json()["preset"]["entries"][0]["id"] == "orphan"

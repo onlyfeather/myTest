@@ -37,11 +37,22 @@ class Mode:
     description: str
     # 固定追加在预设后面，不能在预设里删掉。
     guard: str
+    # 为 False 时原样输出条目内容，不加「【标题】」。
+    header: bool = True
 
+
+PREFIX = "prefix"
 
 MODES: dict[str, Mode] = {
     m.id: m
     for m in (
+        Mode(
+            PREFIX,
+            "前置",
+            "NSFW 或强攻击力模式生效时，排在它们前面一起发送，原样输出、不加标题。单独不会生效。",
+            "",
+            header=False,
+        ),
         Mode(
             "nsfw",
             "NSFW 模式",
@@ -204,7 +215,8 @@ def render(mode: Mode, entries: list[Entry], *, char: str, user: str, rng: rando
     if not parts:
         return ""
     body = "\n\n".join(parts)[:MAX_PROMPT_CHARS]
-    return f"【{mode.title}】\n{body}\n\n{mode.guard}"
+    text = f"【{mode.title}】\n{body}" if mode.header else body
+    return f"{text}\n\n{mode.guard}" if mode.guard else text
 
 
 def _ids(value: Any) -> set[str]:
@@ -227,13 +239,18 @@ def build_prompt(
     store: PresetStore, cfg: Any, user_id: str, group_id: str | None, *,
     char: str, user: str, rng: random.Random | None = None,
 ) -> tuple[str, list[str]]:
-    """返回 (要加进回复要求的文字, 实际生效的模式)。"""
+    """返回 (要加进回复要求的文字, 实际生效的模式)。前置只在至少一个模式生效时加在最前面。"""
     parts, used = [], []
     for mode_id in active_modes(cfg, user_id, group_id):
         text = render(MODES[mode_id], store.entries(mode_id), char=char, user=user, rng=rng)
         if text:
             parts.append(text)
             used.append(mode_id)
+    if used and cfg.get("prefix_enabled"):
+        prefix = render(MODES[PREFIX], store.entries(PREFIX), char=char, user=user, rng=rng)
+        if prefix:
+            parts.insert(0, prefix)
+            used.insert(0, PREFIX)
     return "\n\n".join(parts), used
 
 

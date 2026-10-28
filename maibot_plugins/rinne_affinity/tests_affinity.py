@@ -307,15 +307,15 @@ async def _test_preset_modes():
     assert ctx.llm.calls == [] and plugin._store.get("42", 50) == 50
 
     # 两个模式都开：按强攻击力处理
-    both = {**aggressive, "reply_message_id": "a2", "extra_prompt": "【聊天预设】生效模式：nsfw,aggressive\n..."}
+    both = {**aggressive, "reply_message_id": "a2", "extra_prompt": "【聊天预设】生效模式：prefix,nsfw,aggressive\n..."}
     await plugin.remember_sender(message=inbound("a2", "42", "hi"))
     assert "modified_kwargs" not in await plugin.inject_relationship(**both)
 
     # NSFW：只给称呼和亲疏，不加限制亲密的阶段要求和上班规则
     await plugin.remember_sender(message=inbound("n1", "42", "抱一下"))
-    nsfw = {**before_request_kwargs("n1"), "extra_prompt": "【聊天预设】生效模式：nsfw\n成人模式"}
+    nsfw = {**before_request_kwargs("n1"), "extra_prompt": "【聊天预设】生效模式：prefix,nsfw\n成人模式"}
     extra = (await plugin.inject_relationship(**nsfw))["modified_kwargs"]["extra_prompt"]
-    assert extra.startswith("【聊天预设】生效模式：nsfw") and mod.PROMPT_MARKER in extra
+    assert extra.startswith("【聊天预设】生效模式：prefix,nsfw") and mod.PROMPT_MARKER in extra
     assert "称呼对方：您" in extra and "成人模式开着" in extra
     assert "被靠近时礼貌地后退一步" not in extra and "全程使用敬语" not in extra and "绝不使用" not in extra
     ctx.llm.responses = ['{"delta": 1, "reason": "真诚"}']
