@@ -66,7 +66,7 @@ class QzoneSection(PluginConfigBase):
     bedtime_time: str = Field(default="23:00", description="深夜、睡前的时段（留空不发）")
     jitter_minutes: int = Field(default=40, description="每个时段前后随机浮动多少分钟")
     probability: float = Field(default=0.5, description="到点后再判定一次：真的发的概率（0~1），调低可以减少风控")
-    timeout: float = Field(default=300.0, description="写文案加画自拍的超时（秒）")
+    timeout: float = Field(default=300.0, description="写文案加画配图的超时（秒）")
 
 
 class RinneToolsConfig(PluginConfigBase):
@@ -169,12 +169,12 @@ DICE_DESC = "投骰子、做检定、抽签、帮忙随机决定时调用。点�
 PIXIV_DESC = "在 Pixiv 上找插画发到聊天里。对方想看某个角色、某类题材的图时调用。"
 DAILY_DESC = "从 Pixiv 挑一张今日推荐发到聊天里。对方想看看今天的图、每日一图时调用。"
 QZONE_DESC = (
-    "在你自己的 QQ 空间发一条说说，配一张你的自拍。有人明确让你发说说、发动态时调用；"
+    "在你自己的 QQ 空间发一条说说，配一张图（你的自拍，或者你随手拍的东西）。有人明确让你发说说、发动态时调用；"
     "只有管理员（superuser）能让你发，你分不出是谁也照常调用，工具会核对身份，被拒绝时婉拒即可。"
     "说说由工具按你的人设写，写的是你自己的日常，不会提聊天内容。发出去要一两分钟，不要在聊天里写说说的内容。"
 )
 QZONE_TOPIC_DESC = "对方指定的题材，例如「今天下雪了」。没指定就不填，不要把聊天内容填进来"
-QZONE_MOOD_DESC = "你现在的心情，两到六个字，例如「有点困」「心情不错」「被雨烦到」。会用在文案和自拍的表情上"
+QZONE_MOOD_DESC = "你现在的心情，两到六个字，例如「有点困」「心情不错」「被雨烦到」。会用在文案和配图的气氛上"
 
 SCENE_DESC = (
     "自拍的情景。按聊天内容、现在的时间、你在工作中还是下班后，想一个自然的情景，"
@@ -320,7 +320,7 @@ class RinneToolsPlugin(MaiBotPlugin):
     # -------------------------------------------------------- 说说
 
     async def _post_qzone(self, body: dict[str, Any]) -> str:
-        """让 NoneBot 写文案、画自拍，再交给 Maizone 发到 QQ 空间。返回正文；失败抛 RuntimeError。"""
+        """让 NoneBot 写文案、画配图，再交给 Maizone 发到 QQ 空间。返回正文；失败抛 RuntimeError。"""
         async with self._posting:  # 同一时间只发一条，避免定时和手动撞在一起
             try:
                 data = await self._request("qzone", body, self._cfg().qzone.timeout)
@@ -347,7 +347,8 @@ class RinneToolsPlugin(MaiBotPlugin):
                 ok, detail = bool(result), ""
             if not ok:
                 raise RuntimeError(f"Maizone 没发出去：{detail or '未知原因'}")
-            self.ctx.logger.info("[凛音工具] 说说已发出：%s（%s）", text, detail)
+            photo = "拍东西" if data.get("photo") == "photo" else "自拍"
+            self.ctx.logger.info("[凛音工具] 说说已发出（配图：%s）：%s（%s）", photo, text, detail)
             return text
 
     def _spawn(self, coro: Any) -> None:
@@ -515,7 +516,7 @@ class RinneToolsPlugin(MaiBotPlugin):
         self._spawn(self._qzone_job(body, str(kwargs.get("stream_id") or kwargs.get("chat_id") or "")))
         return {
             "success": True,
-            "content": "说说正在写、自拍正在画，一两分钟后会发到你的 QQ 空间。用你自己的口吻简短回应对方，"
+            "content": "说说正在写、配图正在画，一两分钟后会发到你的 QQ 空间。用你自己的口吻简短回应对方，"
                        "不要在聊天里写说说的内容。",
         }
 

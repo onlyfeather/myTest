@@ -7,6 +7,7 @@ import importlib.util
 import json
 import random
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -403,12 +404,10 @@ def test_rinne_tools_declare_msg_id():
 
 
 def test_qzone_ai_flavor_checks():
-    from mytest.plugins.tools_api_plugin.qzone import ai_flavor_problems
+    from mytest.plugins.tools_api_plugin.qzone import EXAMPLES, LENGTHS, ai_flavor_problems
 
-    from mytest.plugins.tools_api_plugin.qzone import EXAMPLES
-
-    for example in EXAMPLES.split("\n\n"):
-        assert ai_flavor_problems(example) == [], example
+    for example in EXAMPLES:
+        assert any(ai_flavor_problems(example, length) == [] for length in LENGTHS), example
     assert any("太短" in p for p in ai_flavor_problems("红茶罐见底了。明明上周才买的。"))
     assert ai_flavor_problems("今天也要加油哦～")
     assert ai_flavor_problems("这不是普通的下午，而是属于自己的时间")
@@ -437,9 +436,11 @@ def _qzone_env(monkeypatch, tmp_path, replies):
     from mytest.plugins.tools_api_plugin import qzone
 
     monkeypatch.setattr(qzone, "qzone_settings", SimpleNamespace(
-        enabled=True, model="", topics=["擦银器", "停电", "烤司康"], extra="",
+        enabled=True, model="", topics=["擦银器", "停电", "烤司康"], extra="", photo_ratio=35, city="",
     ))
     monkeypatch.setattr(qzone, "history_path", lambda: tmp_path / "qzone_history.json")
+    # 长度档默认固定成正常长度，测长短的用例自己再换
+    monkeypatch.setattr(qzone, "pick_length", lambda rng: qzone.NORMAL)
     calls = []
 
     async def fake_chat(messages, **kwargs):
@@ -488,7 +489,9 @@ def test_qzone_slot_prompts(monkeypatch, tmp_path):
     assert post.event.startswith("睡前")
     system, user = calls[0][0]["content"], calls[0][1]["content"]
     assert "深夜，睡前" in system and "不用敬语" in system and "睡衣" in user
-    assert "可以从这里挑" not in user, "定时时段按时段拟事件，不用随机题材"
+    # 定时说说也给题材参考，排在时段提示后面
+    assert "从这里挑" in user and user.index("睡衣") < user.index("从这里挑")
+    assert any(t in user for t in ("擦银器", "停电", "烤司康"))
 
     morning = datetime(2026, 10, 28, 9, 50, tzinfo=qzone.BEIJING)
     asyncio.run(qzone.write_post(slot="work", now=morning))
@@ -518,6 +521,112 @@ def test_qzone_history_keeps_latest(monkeypatch, tmp_path):
     assert len(items) == qzone.HISTORY_SIZE and items[-1]["text"] == f"第{qzone.HISTORY_SIZE + 2}条"
 
 
+def test_qzone_length_tiers():
+    from mytest.plugins.tools_api_plugin import qzone
+
+    short, normal, long_ = qzone.LENGTHS
+    # 一个字的说说在短档里合格，在正常档里太短
+    assert qzone.ai_flavor_problems("困。", short) == []
+    assert any("太短" in p for p in qzone.ai_flavor_problems("困。", normal))
+    assert any("太长" in p for p in qzone.ai_flavor_problems(LONG_POST, short))
+    assert qzone.ai_flavor_problems(LONG_POST, normal) == []
+    assert any("太短" in p for p in qzone.ai_flavor_problems(LONG_POST, long_))
+    # AI 腔不管哪个档都要拦
+    assert qzone.ai_flavor_problems("加油。", short)
+    # 每个档都抽得到，正常档最多
+    rng = random.Random(0)
+    picks = [qzone.pick_length(rng) for _ in range(1000)]
+    assert {picks.count(x) > 0 for x in qzone.LENGTHS} == {True}
+    assert picks.count(normal) > picks.count(short) > picks.count(long_)
+
+
+def test_qzone_short_tier_passes_and_retries_follow_tier(monkeypatch, tmp_path):
+    from mytest.plugins.tools_api_plugin import qzone as qzone_mod
+
+    short = qzone_mod.LENGTHS[0]
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [
+        json.dumps({"text": LONG_POST, "mood": "困", "scene": "床上"}, ensure_ascii=False),
+        '{"text": "困。", "mood": "困", "scene": "床上"}',
+    ])
+    monkeypatch.setattr(qzone, "pick_length", lambda rng: short)
+    post = asyncio.run(qzone.write_post())
+    assert post.text == "困。" and len(calls) == 2
+    assert "只写一句话" in calls[0][1]["content"]
+    assert "太长" in calls[1][-1]["content"] and "只写一句话" in calls[1][-1]["content"]
+
+
+def test_qzone_examples_rotate():
+    from mytest.plugins.tools_api_plugin import qzone
+
+    assert len(qzone.EXAMPLES) >= 10
+    lengths = [len(e) for e in qzone.EXAMPLES]
+    assert min(lengths) <= 10 and max(lengths) >= 200, "示例要有长有短"
+    rng = random.Random(0)
+    seen = set()
+    for _ in range(200):
+        length = qzone.pick_length(rng)
+        picked = qzone.pick_examples(length, rng)
+        assert len(picked) == 2 and picked[0] != picked[1]
+        assert length.low <= len(picked[0]) <= length.high, "第一条合这次的长度档"
+        seen.update(picked)
+    assert len(seen) >= len(qzone.EXAMPLES) - 1
+    # 抽到的示例写进 system prompt，没抽到的不写
+    system = qzone.build_system_prompt({}, datetime(2026, 10, 28, 10, tzinfo=qzone.BEIJING), [],
+                                       examples=["困。", "银扣又掉了一颗。"])
+    assert "困。" in system and "银扣又掉了一颗。" in system and "书房的窗户" not in system
+
+
+def test_qzone_history_with_dates(monkeypatch, tmp_path):
+    reply = json.dumps({"text": LONG_POST, "mood": "还行", "scene": "门口"}, ensure_ascii=False)
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [reply])
+    now = datetime(2026, 10, 28, 18, tzinfo=qzone.BEIJING)
+    qzone.remember("新鞋磨脚。", now - timedelta(days=6))
+    qzone.remember("床单晾不干。", now - timedelta(days=1))
+    qzone.remember("困。", now - timedelta(hours=3))
+    # 旧版本没存时间的也照样能用
+    path = tmp_path / "qzone_history.json"
+    path.write_text(json.dumps([{"text": "老的一条"}, *json.loads(path.read_text(encoding="utf-8"))],
+                               ensure_ascii=False), encoding="utf-8")
+    asyncio.run(qzone.write_post(now=now))
+    system = calls[0][0]["content"]
+    assert "10月22日（6 天前）：新鞋磨脚。" in system
+    assert "10月27日（昨天）：床单晾不干。" in system
+    assert "10月28日（今天）：困。" in system
+    assert "- 老的一条" in system
+    assert "接着之前说过的事" in system
+
+
+def test_qzone_day_notes():
+    from datetime import date
+
+    from mytest.plugins.tools_api_plugin.qzone import day_notes
+
+    assert day_notes(date(2026, 10, 20)) == []
+    assert day_notes(date(2026, 10, 28)) == ["大后天是万圣夜"]
+    assert day_notes(date(2026, 10, 31)) == ["周末", "今天是万圣夜", "月底"]
+    assert day_notes(date(2026, 12, 23)) == ["明天是平安夜"]
+    assert day_notes(date(2026, 12, 25)) == ["今天是圣诞节"]
+    assert day_notes(date(2027, 2, 6)) == ["周末", "今天是春节"]
+    assert day_notes(date(2027, 2, 5)) == ["今天是除夕"]
+    assert day_notes(date(2027, 2, 2)) == ["大后天是除夕", "月初"]
+    assert "今天是七夕" in day_notes(date(2027, 8, 8))
+    # 中秋和国庆假期撞在一天时说中秋
+    assert "今天是中秋节" in day_notes(date(2028, 10, 3))
+    assert day_notes(date(2026, 11, 2)) == ["月初"]
+    assert day_notes(date(2026, 11, 28)) == ["周末", "月底"]
+    assert day_notes(date(2026, 12, 30)) == ["明天是跨年夜", "月底"]
+    # 农历表之外的年份只算公历节日
+    assert day_notes(date(2040, 12, 25)) == ["今天是圣诞节"]
+
+
+def test_qzone_user_prompt_has_day_notes(monkeypatch, tmp_path):
+    reply = json.dumps({"text": LONG_POST, "mood": "还行", "scene": "厨房"}, ensure_ascii=False)
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [reply])
+    asyncio.run(qzone.write_post(slot="work", now=datetime(2026, 12, 25, 10, tzinfo=qzone.BEIJING)))
+    first_line = calls[0][1]["content"].splitlines()[0]
+    assert first_line == "现在是12月25日，星期五，10点，冬天，今天是圣诞节。"
+
+
 def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
     import base64
 
@@ -527,6 +636,8 @@ def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
     monkeypatch.setattr(tools, "_is_superuser", lambda user_id: user_id == "1196477724")
     monkeypatch.setattr(qzone, "qzone_ready", lambda: "")
     monkeypatch.setattr(selfie, "selfie_ready", lambda: "")
+    # 画图关掉时全是自拍
+    monkeypatch.setattr(tools, "_photo_ready", lambda: "画图功能已关闭")
     remembered, scenes, asked = [], [], {}
 
     async def fake_write(**kwargs):
@@ -552,7 +663,8 @@ def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
 
     result = asyncio.run(tools.TOOLS["qzone"].run(owner, {"mood": "心情" * 20, "topic": "下雪"}))
     assert result["text"] == "停电了。" and base64.b64decode(result["image"]) == b"png"
-    assert asked == {"topic": "下雪", "mood": ("心情" * 20)[:20], "slot": ""}
+    assert asked == {"topic": "下雪", "mood": ("心情" * 20)[:20], "slot": "", "photo": qzone.SELFIE}
+    assert result["photo"] == qzone.SELFIE
     assert scenes == ["烛光下。表情和气氛：有点烦"] and remembered == ["停电了。"]
     asyncio.run(tools.TOOLS["qzone"].run(ToolContext("1196477724", None), {"slot": "bedtime"}))
     assert asked["slot"] == "bedtime"
@@ -561,6 +673,173 @@ def test_qzone_tool_superuser_only_and_returns_image(sent, monkeypatch):
     monkeypatch.setattr(qzone, "qzone_ready", lambda: "发说说功能已关闭")
     with pytest.raises(ToolError, match="关闭"):
         asyncio.run(tools.TOOLS["qzone"].run(owner, {"check_only": True}))
+
+
+def test_qzone_tool_photo_path(sent, monkeypatch):
+    import base64
+
+    import mytest.plugins.tools_api_plugin.tools as tools
+    from mytest.plugins.tools_api_plugin import qzone, selfie
+
+    monkeypatch.setattr(tools, "_is_superuser", lambda user_id: True)
+    monkeypatch.setattr(qzone, "qzone_ready", lambda: "")
+    monkeypatch.setattr(qzone, "remember", lambda text, now=None: None)
+    monkeypatch.setattr(selfie, "selfie_ready", lambda: "")
+    monkeypatch.setattr(tools, "_photo_ready", lambda: "")
+    monkeypatch.setattr(qzone, "pick_photo", lambda rng, **kwargs: qzone.PHOTO)
+    prompts, asked = [], {}
+
+    async def fake_write(**kwargs):
+        asked.update(kwargs)
+        return qzone.Post(text="茶凉了。", mood="发呆", scene="窗台上一杯凉掉的红茶", photo=kwargs["photo"])
+
+    async def fake_photo(prompt):
+        prompts.append(prompt)
+        return b"jpg"
+
+    async def no_selfie(scene):
+        raise AssertionError("拍东西时不画自拍")
+
+    monkeypatch.setattr(qzone, "write_post", fake_write)
+    monkeypatch.setattr(tools, "_take_photo", fake_photo)
+    monkeypatch.setattr(selfie, "take_selfie", no_selfie)
+
+    owner = ToolContext("1196477724", None)
+    result = asyncio.run(tools.TOOLS["qzone"].run(owner, {"mood": "发呆"}))
+    assert result["photo"] == qzone.PHOTO and base64.b64decode(result["image"]) == b"jpg"
+    assert asked["photo"] == qzone.PHOTO
+    assert prompts == ["随手用手机拍的照片，画面里没有人：窗台上一杯凉掉的红茶。气氛：发呆"]
+
+    # 两种图都画不了：检查阶段就拒绝
+    monkeypatch.setattr(selfie, "selfie_ready", lambda: "还没有上传人设图")
+    monkeypatch.setattr(tools, "_photo_ready", lambda: "画图功能已关闭")
+    with pytest.raises(ToolError, match="配不了图"):
+        asyncio.run(tools.TOOLS["qzone"].run(owner, {"check_only": True}))
+    assert sent == []
+
+
+def test_qzone_pick_photo(monkeypatch, tmp_path):
+    qzone, _ = _qzone_env(monkeypatch, tmp_path, [])
+    rng = random.Random(0)
+    assert qzone.pick_photo(rng, can_selfie=True, can_photo=False) == qzone.SELFIE
+    assert qzone.pick_photo(rng, can_selfie=False, can_photo=True) == qzone.PHOTO
+    assert qzone.pick_photo(rng, can_selfie=False, can_photo=False) == ""
+    picks = [qzone.pick_photo(rng, can_selfie=True, can_photo=True) for _ in range(1000)]
+    assert 250 < picks.count(qzone.PHOTO) < 450, "默认 35% 拍东西"
+    qzone.qzone_settings.photo_ratio = 0
+    assert {qzone.pick_photo(rng, can_selfie=True, can_photo=True) for _ in range(100)} == {qzone.SELFIE}
+    qzone.qzone_settings.photo_ratio = 100
+    assert {qzone.pick_photo(rng, can_selfie=True, can_photo=True) for _ in range(100)} == {qzone.PHOTO}
+
+
+def test_qzone_photo_prompts(monkeypatch, tmp_path):
+    reply = json.dumps({"text": LONG_POST, "mood": "困", "scene": "床头的小灯"}, ensure_ascii=False)
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [reply] * 2)
+    night = datetime(2026, 10, 28, 23, tzinfo=qzone.BEIJING)
+
+    post = asyncio.run(qzone.write_post(slot="bedtime", now=night, photo=qzone.PHOTO))
+    assert post.photo == qzone.PHOTO
+    system, user = calls[0][0]["content"], calls[0][1]["content"]
+    assert qzone.PHOTO_HINT in user and "睡衣" not in user, "拍东西时不写穿着"
+    assert qzone.SCENE_FORMATS[qzone.PHOTO] in system and qzone.SCENE_FORMATS[qzone.SELFIE] not in system
+
+    post = asyncio.run(qzone.write_post(slot="bedtime", now=night))
+    assert post.photo == qzone.SELFIE
+    system, user = calls[1][0]["content"], calls[1][1]["content"]
+    assert qzone.PHOTO_HINT not in user and "睡衣" in user
+    assert qzone.SCENE_FORMATS[qzone.SELFIE] in system
+
+
+def test_qzone_user_prompt_has_weather(monkeypatch, tmp_path):
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins.tools_api_plugin import weather
+
+    reply = json.dumps({"text": LONG_POST, "mood": "还行", "scene": "窗边"}, ensure_ascii=False)
+    qzone, calls = _qzone_env(monkeypatch, tmp_path, [reply] * 3)
+    asked = []
+
+    async def fake_fetch(city):
+        asked.append(city)
+        return "杭州现在下小雨，16°C"
+
+    monkeypatch.setattr(weather, "fetch", fake_fetch)
+    # 没填城市不查
+    asyncio.run(qzone.write_post())
+    assert asked == [] and "天气" not in calls[0][1]["content"]
+
+    qzone.qzone_settings.city = "杭州"
+    asyncio.run(qzone.write_post())
+    assert asked == ["杭州"] and "她那边的天气：杭州现在下小雨，16°C。" in calls[1][1]["content"]
+
+    # 查不到也照常写，只是不带天气
+    async def broken(city):
+        raise ServiceError("找不到")
+
+    monkeypatch.setattr(weather, "fetch", broken)
+    asyncio.run(qzone.write_post())
+    assert "天气" not in calls[2][1]["content"]
+
+
+def test_weather_describe():
+    from mytest.plugins.tools_api_plugin.weather import describe
+
+    data = {
+        "current": {"temperature_2m": 16.0, "apparent_temperature": 15.8, "weather_code": 51, "wind_speed_10m": 6.2},
+        "daily": {"temperature_2m_max": [22.6], "temperature_2m_min": [15.2], "precipitation_probability_max": [75]},
+    }
+    assert describe("上海", data) == "上海现在下毛毛雨，16°C，今天 15 到 23°C，降水概率 75%"
+    cold = {"current": {"temperature_2m": 2.0, "apparent_temperature": -3.4, "weather_code": 71, "wind_speed_10m": 35}}
+    assert describe("北京", cold) == "北京现在下小雪，2°C（体感 -3°C），风很大"
+    # 字段缺了也不出错
+    assert describe("杭州", {}) == "杭州现在"
+    assert describe("杭州", {"current": {"weather_code": 1234}, "daily": {"temperature_2m_max": []}}) == "杭州现在"
+
+
+def test_weather_locate_and_cache(monkeypatch):
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins.tools_api_plugin import weather
+
+    monkeypatch.setattr(weather, "_places", {})
+    monkeypatch.setattr(weather, "_cache", {})
+    requests = []
+
+    async def fake_get_json(url, params):
+        requests.append((url, params.get("name")))
+        if url == weather.FORECAST_URL:
+            return {"current": {"temperature_2m": 20, "weather_code": 0}}
+        if params["name"] == "杭州":
+            return {"results": [{"latitude": 30.29, "longitude": 120.16, "name": "杭州"}]}
+        return {"generationtime_ms": 0.1}
+
+    monkeypatch.setattr(weather, "_get_json", fake_get_json)
+    # 「杭州市」查不到，去掉「市」再查
+    assert asyncio.run(weather.locate("杭州市")) == (30.29, 120.16, "杭州")
+    assert [name for _, name in requests] == ["杭州市", "杭州"]
+    with pytest.raises(ServiceError, match="找不到"):
+        asyncio.run(weather.locate("不存在的地方"))
+
+    requests.clear()
+    assert asyncio.run(weather.fetch("杭州市")) == "杭州现在晴，20°C"
+    assert asyncio.run(weather.fetch("杭州市")) == "杭州现在晴，20°C"
+    # 城市坐标记住了，天气半小时内也不重复查
+    assert requests == [(weather.FORECAST_URL, None)]
+
+    assert asyncio.run(weather.current_weather("  ")) == ""
+    assert asyncio.run(weather.current_weather("不存在的地方")) == ""
+
+
+def test_qzone_weather_tester(monkeypatch, tmp_path):
+    from mytest.plugins.tools_api_plugin import weather
+
+    qzone, _ = _qzone_env(monkeypatch, tmp_path, [])
+
+    async def fake_fetch(city):
+        return f"{city}现在晴"
+
+    monkeypatch.setattr(weather, "fetch", fake_fetch)
+    assert "没有填城市" in asyncio.run(qzone.test_weather())
+    qzone.qzone_settings.city = "杭州"
+    assert asyncio.run(qzone.test_weather()) == "天气查到了：杭州现在晴"
 
 
 def test_rinne_tools_plan_slots():

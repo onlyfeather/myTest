@@ -20,7 +20,7 @@ require("nonebot_plugin_alconna")
 
 from .._shared.help import HelpTopic, help_registry
 from .._shared.settings import settings_store
-from .qzone import qzone_settings
+from .qzone import qzone_settings, test_weather
 from .selfie import list_persona_status, selfie_settings
 from .server import create_router
 from .tools import TOOLS
@@ -43,6 +43,7 @@ def _token() -> str:
 
 
 settings_store.set_tester("selfie", list_persona_status)
+settings_store.set_tester("qzone", test_weather)
 
 help_registry.register(
     HelpTopic(

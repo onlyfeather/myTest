@@ -10,7 +10,7 @@
 | `rinne_voice` | 对方想听她用语音说、让她唱歌 | 合成语音发出（唱歌和大段语音只限 superuser） |
 | `rinne_dice` | 跑团检定、随机决定 | 真随机投骰，结果发到群里 |
 | `rinne_pixiv_search` / `rinne_pixiv_daily` | 对方想看某类插画 | Pixiv 搜图 / 每日推荐 |
-| `rinne_qzone_post` | 有人让她发说说（NoneBot 核对，只限 superuser） | 按人设写一条日常说说 + 画自拍，返回给插件，再由 Maizone 发到 QQ 空间 |
+| `rinne_qzone_post` | 有人让她发说说（NoneBot 核对，只限 superuser） | 按人设写一条日常说说 + 画一张配图（自拍或随手拍的东西），返回给插件，再由 Maizone 发到 QQ 空间 |
 
 ## 说说
 
@@ -20,7 +20,10 @@
 - 需要装 [Maizone](https://github.com/internetsb/Maizone)，发送用它的 `send_feed_api`。Maizone 自己的定时发送（`enable_auto_send`）要关掉。
 - 定时发说说在插件配置的「说说」里打开，要填 `superuser_id`（NoneBot 的 superuser QQ 号）。
   每天三个时段：上午 10:00（工作中）、傍晚 18:00（刚下班）、深夜 23:00（睡前），各自前后随机浮动 40 分钟。
-  到点后再按 `probability` 判定一次，通过了才让 NoneBot 按这个时段的状态拟一件事、写说说、画对应穿着的自拍。
+  到点后再按 `probability` 判定一次，通过了才让 NoneBot 按这个时段的状态拟一件事、写说说、画配图。
+- 配图每条都有：默认 35% 是她随手拍的东西（茶杯、窗外之类，用「AI 画图」的默认后端），其余是穿着合时段的自拍。
+  比例在 WebUI「凛音的说说」的「拍东西的比例」里改；画图关掉时全是自拍，没上传人设图时全拍东西。
+- WebUI「凛音的说说」里填了城市，写说说时会查实时天气（Open-Meteo，不用 API Key）给她参考；留空不查，查不到也照常发。
 
 所有工具都是核心工具，凛音每轮都能看到。确认的话由凛音自己回复，NoneBot 不发词库里的确认词。
 

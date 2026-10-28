@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "onlyfeather.rinne-tools",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "name": "凛音的工具",
   "description": "让凛音在聊天中调用 NoneBot 的功能：画图、自拍、语音、投骰、Pixiv 搜图、发说说。功能由同一台服务器上的 NoneBot 执行，结果直接发到聊天里；说说通过 Maizone 插件发到 QQ 空间。",
   "author": {

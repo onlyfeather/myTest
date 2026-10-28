@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import random
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -361,27 +362,47 @@ async def tool_pixiv_daily(ctx: ToolContext, args: dict[str, Any]) -> dict[str, 
 # ---------------------------------------------------------------- 说说
 
 
+def _photo_ready() -> str:
+    """能画「随手拍的东西」返回空字符串，否则返回原因。用「AI 画图」的默认后端。"""
+    from ..ai_draw_plugin.config import draw_settings
+
+    return "" if draw_settings.enabled else "画图功能已关闭"
+
+
+async def _take_photo(prompt: str) -> bytes:
+    from ..ai_draw_plugin.config import draw_settings
+    from ..ai_draw_plugin.prompting import DrawRequest
+    from ..ai_draw_plugin.service import draw
+
+    result = await draw(str(draw_settings.default_provider), DrawRequest(size="方图", prompt=prompt))
+    return result.image
+
+
 async def tool_qzone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    """写一条说说并配自拍，把正文和图片返回给 MaiBot，由它通过 Maizone 发到 QQ 空间。
+    """写一条说说并配图（自拍或随手拍的东西），把正文和图片返回给 MaiBot，由它通过 Maizone 发到 QQ 空间。
 
     check_only 时只检查能不能发，凛音马上就能知道要不要婉拒；真正生成要一两分钟。
     """
-    from .qzone import qzone_ready, remember, write_post
+    from .qzone import PHOTO, pick_photo, qzone_ready, remember, write_post
     from .selfie import selfie_ready, take_selfie
 
     if not _is_superuser(ctx.user_id):
         raise ToolError("发说说只有管理员（superuser）能让你发，这个人不是，请用自己的话婉拒")
-    if reason := qzone_ready() or selfie_ready():
+    if reason := qzone_ready():
         raise ToolError(reason)
+    selfie_reason, photo_reason = selfie_ready(), _photo_ready()
+    if selfie_reason and photo_reason:
+        raise ToolError(f"配不了图：{selfie_reason}，{photo_reason}")
     topic = _text(args, "topic", limit=100)
     mood = _text(args, "mood", limit=100)[:20]
     slot = _text(args, "slot", limit=20)
     if args.get("check_only") is True:
         return {"content": "可以发"}
 
+    photo = pick_photo(random.Random(), can_selfie=not selfie_reason, can_photo=not photo_reason)
     try:
-        post = await write_post(topic=topic, mood=mood, slot=slot)
-        image = await take_selfie(post.selfie_scene)
+        post = await write_post(topic=topic, mood=mood, slot=slot, photo=photo)
+        image = await (_take_photo(post.photo_prompt) if photo == PHOTO else take_selfie(post.selfie_scene))
     except Exception as e:
         logger.opt(exception=e).warning("[凛音工具] qzone 失败")
         raise ToolError(describe_exception("说说", e)) from None
@@ -390,6 +411,7 @@ async def tool_qzone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "content": "说说已经写好",
         "text": post.text,
         "mood": post.mood,
+        "photo": photo,
         "image": base64.b64encode(image).decode("ascii"),
     }
 
