@@ -124,6 +124,15 @@ DEFAULT_RULES: dict[str, Any] = {
 # 上下班按北京时间判断，避免服务器使用 UTC 时“晚上”错开 8 小时。
 BEIJING = timezone(timedelta(hours=8))
 PROMPT_MARKER = "【好感度插件】"
+# 凛音工具插件（rinne_tools）在回复前写入的聊天预设标记，它在本插件之前运行。
+PRESET_MODES = re.compile(r"【聊天预设】生效模式：([a-z_,]+)")
+NSFW_RELATION_RULE = (
+    "成人模式开着：亲密程度和性内容按【聊天预设】里的要求来。上面的关系只决定称呼和你对这个人有多亲近，不限制亲密，也不要因为在工作中就拒绝。"
+)
+NSFW_SCORING_NOTE = (
+    "\n这次对话开着成人模式：调情、性暗示和性方面的请求本身不算轻浮冒犯，不因此扣分；"
+    "只按对方是否真诚、是否尊重她来评分。"
+)
 
 
 def load_rules(path: str, role_id: str) -> tuple[dict[str, Any], str]:
@@ -193,17 +202,34 @@ def user_call_for(stage: dict[str, Any], state: DutyState) -> str:
     return str(stage.get("user_call") or "您")
 
 
-def build_extra_prompt(name: str, favorability: int, stage: dict[str, Any], state: DutyState) -> str:
-    items = [
-        ("关系阶段", f"{stage.get('name', '未知')}（好感度 {favorability}/100）"),
-        ("你现在的状态", f"{state.label}。{state.description}".rstrip("。") + "。"),
-        ("称呼对方", user_call_for(stage, state)),
-        ("态度", str(stage.get("attitude") or "")),
-        ("要求", str(stage.get("directive") or "")),
-    ]
+def preset_modes(extra_prompt: str) -> set[str]:
+    """凛音工具插件在回复要求里写的「生效模式」。"""
+    match = PRESET_MODES.search(extra_prompt or "")
+    return set(match.group(1).split(",")) if match else set()
+
+
+def build_extra_prompt(name: str, favorability: int, stage: dict[str, Any], state: DutyState,
+                       *, nsfw: bool = False) -> str:
+    if nsfw:
+        # 成人模式下亲密程度交给聊天预设，关系只决定称呼和亲疏；阶段和上下班里限制亲密的要求都不加。
+        items = [
+            ("关系阶段", f"{stage.get('name', '未知')}（好感度 {favorability}/100）"),
+            ("你现在的状态", state.label),
+            ("称呼对方", user_call_for(stage, state)),
+        ]
+        rules = [NSFW_RELATION_RULE]
+    else:
+        items = [
+            ("关系阶段", f"{stage.get('name', '未知')}（好感度 {favorability}/100）"),
+            ("你现在的状态", f"{state.label}。{state.description}".rstrip("。") + "。"),
+            ("称呼对方", user_call_for(stage, state)),
+            ("态度", str(stage.get("attitude") or "")),
+            ("要求", str(stage.get("directive") or "")),
+        ]
+        rules = state.rules
     lines = [f"{PROMPT_MARKER}你和这次回复的对象「{name}」的关系（以此为准）："]
     lines += [f"- {label}：{value}" for label, value in items if value.strip()]
-    lines += [f"- {rule}" for rule in state.rules if rule.strip()]
+    lines += [f"- {rule}" for rule in rules if rule.strip()]
     lines.append("- 开头直接回应对方说的内容，不要用“恕我直言”“遵命”之类的固定开场白，也不要和你最近几条回复用同样的开头。")
     lines.append("- 不要在回复里提到好感度、关系阶段这类后台信息。")
     return "\n".join(lines)
@@ -394,6 +420,8 @@ class RinneAffinityPlugin(MaiBotPlugin):
         self._senders: OrderedDict[str, Sender] = OrderedDict()
         self._pending: OrderedDict[str, Sender] = OrderedDict()
         self._scored: OrderedDict[str, None] = OrderedDict()
+        self._unscored: OrderedDict[str, None] = OrderedDict()  # 强攻击力模式下的回复
+        self._nsfw_replies: OrderedDict[str, None] = OrderedDict()
         self._tasks: set[asyncio.Task] = set()
         data_dir = Path(self.ctx.paths.data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -483,11 +511,19 @@ class RinneAffinityPlugin(MaiBotPlugin):
             existing = str(kwargs.get("extra_prompt") or "")
             if PROMPT_MARKER in existing:
                 return {"action": "continue"}
+            modes = preset_modes(existing)
+            if "aggressive" in modes:
+                # 强攻击力模式：这次回复不加关系信息，也不评分
+                self._remember(self._unscored, reply_id, None, self.MAX_TRACKED_REPLIES)
+                return {"action": "continue"}
+            nsfw = "nsfw" in modes
+            if nsfw:
+                self._remember(self._nsfw_replies, reply_id, None, self.MAX_TRACKED_REPLIES)
 
             favorability = self._store.get(sender.user_id, cfg.plugin.default_favorability)
             stage = stage_for(self._rules, favorability)
             state = duty_state(self._rules, sender.is_group, favorability)
-            extra = build_extra_prompt(sender.name, favorability, stage, state)
+            extra = build_extra_prompt(sender.name, favorability, stage, state, nsfw=nsfw)
             kwargs["extra_prompt"] = f"{existing}\n\n{extra}".strip()
             self._remember(self._pending, reply_id, sender, self.MAX_TRACKED_REPLIES)
             return {"action": "continue", "modified_kwargs": kwargs}
@@ -504,7 +540,7 @@ class RinneAffinityPlugin(MaiBotPlugin):
             response = str(kwargs.get("response") or "").strip()
             if not (cfg.plugin.enabled and cfg.scoring.enabled and reply_id and response):
                 return {"action": "continue"}
-            if reply_id in self._scored:
+            if reply_id in self._scored or reply_id in self._unscored:
                 return {"action": "continue"}
             sender = self._pending.pop(reply_id, None) or await self._resolve_sender(
                 reply_id, str(kwargs.get("session_id") or "")
@@ -512,20 +548,22 @@ class RinneAffinityPlugin(MaiBotPlugin):
             if sender is None or sender.is_bot:
                 return {"action": "continue"}
             self._remember(self._scored, reply_id, None, self.MAX_TRACKED_REPLIES)
-            task = asyncio.get_running_loop().create_task(self._score(sender, response))
+            nsfw = reply_id in self._nsfw_replies
+            task = asyncio.get_running_loop().create_task(self._score(sender, response, nsfw=nsfw))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         except Exception as e:
             self.ctx.logger.warning("[好感度] 安排好感度评估失败: %s", e)
         return {"action": "continue"}
 
-    async def _score(self, sender: Sender, response: str) -> None:
+    async def _score(self, sender: Sender, response: str, *, nsfw: bool = False) -> None:
         cfg = self._cfg()
         try:
             favorability = self._store.get(sender.user_id, cfg.plugin.default_favorability)
             stage = stage_for(self._rules, favorability)
+            system = SCORING_SYSTEM_PROMPT.format(role=cfg.plugin.role_name) + (NSFW_SCORING_NOTE if nsfw else "")
             prompt = [
-                {"role": "system", "content": SCORING_SYSTEM_PROMPT.format(role=cfg.plugin.role_name)},
+                {"role": "system", "content": system},
                 {
                     "role": "user",
                     "content": (

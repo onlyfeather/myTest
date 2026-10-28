@@ -293,8 +293,47 @@ async def _test_commands():
         assert bool(re.match(pattern, text)) is should_match, (pattern, text)
 
 
+async def _test_preset_modes():
+    """凛音工具插件先写入「【聊天预设】生效模式：…」，好感度插件据此配合。"""
+    plugin, ctx = make_plugin()
+    await plugin.on_load()
+
+    # 强攻击力：不加关系信息，也不评分
+    await plugin.remember_sender(message=inbound("a1", "42", "你个傻子"))
+    aggressive = {**before_request_kwargs("a1"), "extra_prompt": "【聊天预设】生效模式：aggressive\n直接开喷"}
+    assert "modified_kwargs" not in await plugin.inject_relationship(**aggressive)
+    await plugin.schedule_scoring(reply_message_id="a1", response="滚", session_id=GROUP_SESSION)
+    await drain(plugin)
+    assert ctx.llm.calls == [] and plugin._store.get("42", 50) == 50
+
+    # 两个模式都开：按强攻击力处理
+    both = {**aggressive, "reply_message_id": "a2", "extra_prompt": "【聊天预设】生效模式：nsfw,aggressive\n..."}
+    await plugin.remember_sender(message=inbound("a2", "42", "hi"))
+    assert "modified_kwargs" not in await plugin.inject_relationship(**both)
+
+    # NSFW：只给称呼和亲疏，不加限制亲密的阶段要求和上班规则
+    await plugin.remember_sender(message=inbound("n1", "42", "抱一下"))
+    nsfw = {**before_request_kwargs("n1"), "extra_prompt": "【聊天预设】生效模式：nsfw\n成人模式"}
+    extra = (await plugin.inject_relationship(**nsfw))["modified_kwargs"]["extra_prompt"]
+    assert extra.startswith("【聊天预设】生效模式：nsfw") and mod.PROMPT_MARKER in extra
+    assert "称呼对方：您" in extra and "成人模式开着" in extra
+    assert "被靠近时礼貌地后退一步" not in extra and "全程使用敬语" not in extra and "绝不使用" not in extra
+    ctx.llm.responses = ['{"delta": 1, "reason": "真诚"}']
+    await plugin.schedule_scoring(reply_message_id="n1", response="……过来。", session_id=GROUP_SESSION)
+    await drain(plugin)
+    assert "成人模式" in ctx.llm.calls[0][0]["content"], "scoring is told not to punish flirting"
+    assert plugin._store.get("42", 50) == 51
+
+    # 没有预设：和原来一样
+    await plugin.remember_sender(message=inbound("p1", "42", "hi"))
+    plain = (await plugin.inject_relationship(**before_request_kwargs("p1")))["modified_kwargs"]["extra_prompt"]
+    assert "全程使用敬语" in plain and "成人模式开着" not in plain
+    assert mod.preset_modes("【聊天预设】\n旧格式") == set()
+
+
 def test_async_flows():
-    for coro in (_test_inject_and_score_group, _test_private_off_duty_and_fallback_lookup, _test_skips, _test_commands):
+    for coro in (_test_inject_and_score_group, _test_private_off_duty_and_fallback_lookup, _test_skips, _test_commands,
+                 _test_preset_modes):
         asyncio.run(coro())
 
 

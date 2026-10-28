@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, HookHandler, MaiBotPlugin, PluginConfigBase, Tool
-from maibot_sdk.types import ErrorPolicy, HookMode, ToolParameterInfo, ToolParamType
+from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
 BEIJING = timezone(timedelta(hours=8))
 MAIZONE_API = "internetsb.maizone.send_feed_api"
@@ -422,7 +422,7 @@ class RinneToolsPlugin(MaiBotPlugin):
     # -------------------------------------------------------- 聊天预设
 
     @HookHandler("maisaka.replyer.before_request", name="inject_preset", mode=HookMode.BLOCKING,
-                 error_policy=ErrorPolicy.SKIP)
+                 order=HookOrder.EARLY, error_policy=ErrorPolicy.SKIP)
     async def inject_preset(self, **kwargs: Any) -> dict[str, Any]:
         """回复前问 NoneBot 这个会话开着哪些模式，把预设加进这次回复的额外要求。"""
         cfg = self._cfg()
@@ -445,8 +445,11 @@ class RinneToolsPlugin(MaiBotPlugin):
         prompt = str(data.get("prompt") or "").strip() if data.get("ok") else ""
         if not prompt:
             return {"action": "continue"}
-        self.ctx.logger.info("[凛音工具] 套用聊天预设 %s（用户 %s）", "、".join(data.get("modes") or []), ctx["user_id"])
-        kwargs["extra_prompt"] = f"{existing}\n\n{PRESET_MARKER}\n{prompt}".strip()
+        modes = [str(m) for m in data.get("modes") or [] if re.fullmatch(r"[a-z_]+", str(m))]
+        self.ctx.logger.info("[凛音工具] 套用聊天预设 %s（用户 %s）", "、".join(modes), ctx["user_id"])
+        # 好感度插件读「生效模式」这一行决定怎么配合，所以要排在它前面运行（order=EARLY）
+        header = f"{PRESET_MARKER}生效模式：{','.join(modes)}"
+        kwargs["extra_prompt"] = f"{existing}\n\n{header}\n{prompt}".strip()
         return {"action": "continue", "modified_kwargs": kwargs}
 
     # -------------------------------------------------------- 工具

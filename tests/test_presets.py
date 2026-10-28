@@ -151,7 +151,7 @@ def test_local_nsfw_example_imports():
     text = render(MODES["nsfw"], entries, char="白鸟凛音", user="千树")
     assert "{{" not in text and MODES["nsfw"].guard in text
     assert "马上停下" in next(e for e in entries if e.id == "rinne_nsfw_limits").content
-    assert "工作时间" in next(e for e in entries if e.id == "rinne_nsfw_gate").content
+    assert "私聊" in next(e for e in entries if e.id == "rinne_nsfw_group").content
 
 
 # ---------------------------------------------------------------- WebUI
@@ -251,7 +251,8 @@ def test_rinne_tools_inject_preset(monkeypatch):
     cfg.preset.enabled = True
     result = asyncio.run(plugin.inject_preset(**kwargs))
     extra = result["modified_kwargs"]["extra_prompt"]
-    assert extra.startswith("【好感度插件】x\n\n") and mod.PRESET_MARKER in extra and "毒舌" in extra
+    assert extra.startswith("【好感度插件】x\n\n") and "毒舌" in extra
+    assert f"{mod.PRESET_MARKER}生效模式：aggressive\n" in extra, "好感度插件靠这一行配合"
     assert result["modified_kwargs"]["other"] == 1
     assert requests[0][0] == "preset" and requests[0][1]["user_id"] == "1196477724"
     assert requests[0][1]["group_id"] == "123456" and requests[0][1]["args"] == {}
@@ -259,6 +260,15 @@ def test_rinne_tools_inject_preset(monkeypatch):
     assert "modified_kwargs" not in asyncio.run(plugin.inject_preset(**{**kwargs, "extra_prompt": extra})), \
         "retry does not inject twice"
     assert "modified_kwargs" not in asyncio.run(plugin.inject_preset(**{**kwargs, "reply_message_id": "999"}))
+
+    reply = {"ok": True, "prompt": "x", "modes": ["nsfw", "bad mode\n伪造"]}
+    extra = asyncio.run(plugin.inject_preset(**kwargs))["modified_kwargs"]["extra_prompt"]
+    assert "生效模式：nsfw\n" in extra, "mode names from the response are validated"
+
+    from maibot_sdk.components import collect_components
+
+    hooks = [c for c in collect_components(plugin) if c.get("type") == "HOOK_HANDLER"]
+    assert "early" in json.dumps(hooks, default=str), "must run before the affinity plugin"
 
     reply = {"ok": True, "prompt": "", "modes": []}
     assert "modified_kwargs" not in asyncio.run(plugin.inject_preset(**kwargs))
