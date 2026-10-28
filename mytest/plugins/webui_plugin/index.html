@@ -505,12 +505,13 @@ function renderMain() {
       toast(r.message || (r.ok ? "测试通过" : "测试失败"), !!r.ok);
     } catch (e) { /* 已处理 */ } finally { testBtn.disabled = false; testBtn.textContent = "测试连接"; }
   } }, "测试连接") : null;
-  main.replaceChildren(
+  main.replaceChildren(...[
     h("div", { class: "head" },
       h("div", {}, h("h2", {}, s.title), s.description ? h("p", {}, s.description) : null),
       testBtn),
     h("div", { class: "card" }, s.fields.map(fieldRow)),
-    (s.files || []).length ? h("div", { class: "card", style: "margin-top:16px" }, s.files.map((f) => fileRow(s, f))) : null);
+    (s.files || []).length ? h("div", { class: "card", style: "margin-top:16px" }, s.files.map((f) => fileRow(s, f))) : null,
+  ].filter(Boolean));
 }
 
 function renderNav() {
