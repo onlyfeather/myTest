@@ -431,6 +431,61 @@ def test_llm_chat_max_tokens(mock_http, monkeypatch):
     assert "max_tokens" not in json.loads(calls[-1].content), "0 means no limit"
 
 
+def _llm_resp(content=None, *, finish="stop", **extra):
+    return {"choices": [{"index": 0, "message": {"role": "assistant", "content": content, **extra},
+                         "finish_reason": finish}]}
+
+
+def test_llm_extract_content():
+    from mytest.plugins._shared.services import llm
+
+    assert llm.extract_content(_llm_resp("1girl, solo")) == "1girl, solo"
+    assert llm.extract_content(_llm_resp("<think>用户想要一个女孩……</think>\n1girl")) == "1girl"
+    assert llm.extract_content(_llm_resp("<thinking>x</thinking>1girl")) == "1girl"
+    parts = [{"type": "text", "text": "1girl, "}, {"type": "text", "text": "solo"}]
+    assert llm.extract_content(_llm_resp(parts)) == "1girl, solo"
+
+
+@pytest.mark.parametrize("data,match,retryable", [
+    (_llm_resp("", finish="length", reasoning_content="很长的思考"), "截断.*思考过程", False),
+    (_llm_resp(None, finish="length"), "截断.*max_tokens", False),
+    (_llm_resp(None, finish="content_filter"), "内容审核", True),
+    (_llm_resp(None, refusal="I can't help with that."), "拒绝了这次请求：I can't", True),
+    (_llm_resp(None, reasoning_content="思考……"), "只返回了思考过程", True),
+    (_llm_resp("<think>想了很久还没想完"), "空内容（finish_reason=stop）", True),
+    (_llm_resp(None, finish=None), "空内容（finish_reason=无）", True),
+])
+def test_llm_empty_reply_reasons(data, match, retryable):
+    from mytest.plugins._shared.services import llm
+
+    with pytest.raises(llm.EmptyReplyError, match=match) as info:
+        llm.extract_content(data)
+    assert info.value.retryable is retryable
+
+
+def test_llm_malformed_response():
+    from mytest.plugins._shared.services import llm
+
+    for bad in ({}, {"choices": []}, {"error": {"message": "x"}}, None):
+        with pytest.raises(http.ServiceError, match="格式不对") as info:
+            llm.extract_content(bad)
+        assert not isinstance(info.value, llm.EmptyReplyError)
+
+
+def test_llm_chat_non_json(mock_http, monkeypatch):
+    from types import SimpleNamespace
+
+    from mytest.plugins._shared.services import llm
+
+    _, responder = mock_http
+    monkeypatch.setattr(llm, "http_client", novelai.http_client)
+    monkeypatch.setattr(llm, "llm_settings", SimpleNamespace(
+        api_key="sk", base_url="https://x", model="m", proxy="", timeout=5.0, max_tokens=0))
+    responder["fn"] = lambda _req: httpx.Response(200, text="<html>首页</html>")
+    with pytest.raises(http.ServiceError, match=r"不是 JSON.*/v1"):
+        asyncio.run(llm.chat([]))
+
+
 def test_webui_options_endpoint(tmp_path):
     client, store = make_app(tmp_path)
     store._sections["demo"].fields.append(SettingField("voice", "音色", fetchable=True))

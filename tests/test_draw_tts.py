@@ -25,22 +25,110 @@ def test_tags():
     assert join_prompt("  ", "1girl") == "1girl"
 
 
-def test_translate_empty_reply_raises(monkeypatch):
-    """带思考的模型只返回思考内容、正文为空时直接报错，不用原文出图。"""
+def _fake_chat(monkeypatch, *replies):
+    """依次返回 replies 里的回复，记录调用次数。"""
+    from mytest.plugins._shared.services import llm
+
+    calls = []
+
+    async def fake_chat(messages, **kwargs):
+        calls.append(kwargs)
+        reply = replies[min(len(calls), len(replies)) - 1]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    return calls
+
+
+def test_parse_tags_json():
+    from mytest.plugins.ai_draw_plugin.prompting import parse_tags_json
+
+    assert parse_tags_json('{"tags": ["1girl", "solo", "white hair"]}') == "1girl, solo, white hair"
+    assert parse_tags_json('好的：\n```json\n{"tags": ["1girl", "1girl", " solo "]}\n```') == "1girl, solo"
+    assert parse_tags_json('<think>用户想要{一个}女孩</think>{"tags": ["1girl"]}') == "1girl"
+    assert parse_tags_json('{"tags": "1girl, solo"}') == "1girl, solo"
+    assert parse_tags_json('{"tags": ["1girl", "初音ミク", "white hair"]}') == "1girl, 初音ミク, white hair"
+    for bad in ("", "1girl, solo", "抱歉，我无法生成这类内容", '{"tags": []}', '{"tag": ["1girl"]}',
+                '{"tags": ["抱歉", "我无法生成"]}', '{"tags": [1, 2]}', '{"tags": ["1girl"', "<think>没想完"):
+        assert parse_tags_json(bad) is None, bad
+
+
+def test_translate_retries_silently(monkeypatch):
+    import asyncio
+
+    from mytest.plugins.ai_draw_plugin import prompting
+
+    calls = _fake_chat(monkeypatch, "1girl, solo", "抱歉，我不能", '{"tags": ["1girl", "solo"]}')
+    assert asyncio.run(prompting.to_novelai_tags("白发少女")) == "1girl, solo"
+    assert len(calls) == 3
+    assert "max_tokens" not in calls[0], "uses the WebUI setting"
+
+
+def test_translate_gives_up_after_three(monkeypatch):
+    """三次都不按格式返回才报错，不用原文出图。"""
     import asyncio
 
     import pytest
 
-    from mytest.plugins._shared.services import llm
     from mytest.plugins._shared.services.http import ServiceError
     from mytest.plugins.ai_draw_plugin import prompting
 
-    async def fake_chat(messages, **kwargs):
-        return ""
-
-    monkeypatch.setattr(llm, "chat", fake_chat)
-    with pytest.raises(ServiceError, match="没有返回正文"):
+    calls = _fake_chat(monkeypatch, "抱歉，我不能")
+    with pytest.raises(ServiceError, match=r"连续 3 次都不行，没有按格式返回 tag.*抱歉"):
         asyncio.run(prompting.to_novelai_tags("白发少女"))
+    assert len(calls) == 3
+
+
+def test_translate_retries_empty_reply(monkeypatch):
+    """内容审核、只有思考过程这类空正文会重试；三次都空时报最后一次的原因。"""
+    import asyncio
+
+    import pytest
+
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins._shared.services.llm import EmptyReplyError
+    from mytest.plugins.ai_draw_plugin import prompting
+
+    calls = _fake_chat(monkeypatch, EmptyReplyError("被内容审核拦截了"), '{"tags": ["1girl"]}')
+    assert asyncio.run(prompting.to_novelai_tags("白发少女")) == "1girl"
+    assert len(calls) == 2
+
+    calls = _fake_chat(monkeypatch, EmptyReplyError("只返回了思考过程"))
+    with pytest.raises(ServiceError, match="连续 3 次都不行，只返回了思考过程"):
+        asyncio.run(prompting.to_novelai_tags("白发少女"))
+    assert len(calls) == 3
+
+
+def test_translate_truncated_not_retried(monkeypatch):
+    """max_tokens 不够时原样重试也一样被截断，直接报错。"""
+    import asyncio
+
+    import pytest
+
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins._shared.services.llm import EmptyReplyError
+    from mytest.plugins.ai_draw_plugin import prompting
+
+    calls = _fake_chat(monkeypatch, EmptyReplyError("输出被截断了", retryable=False))
+    with pytest.raises(ServiceError, match=r"^翻译 tag 失败：输出被截断了"):
+        asyncio.run(prompting.to_novelai_tags("白发少女"))
+    assert len(calls) == 1
+
+
+def test_translate_api_error_not_retried(monkeypatch):
+    import asyncio
+
+    import pytest
+
+    from mytest.plugins._shared.services.http import ServiceError
+    from mytest.plugins.ai_draw_plugin import prompting
+
+    calls = _fake_chat(monkeypatch, ServiceError("还没有配置大模型的 API Key"))
+    with pytest.raises(ServiceError, match="API Key"):
+        asyncio.run(prompting.to_novelai_tags("白发少女"))
+    assert len(calls) == 1
 
 
 def test_speakable():
