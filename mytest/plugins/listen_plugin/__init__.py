@@ -22,9 +22,16 @@ from nonebot.plugin import PluginMetadata
 
 from .._shared.events import group_id_of
 from .._shared.help import HelpTopic, help_registry
+from .._shared.settings import AccountPanel, settings_store
+from .accounts.base import PlatformAccounts
+from .accounts.kugou import KugouAccounts
+from .accounts.netease import NeteaseAccounts
+from .accounts.qqmusic import QQMusicAccounts
 from .auth import AuthError
 from .bridge import BotUnavailable, Member, Profile
-from .config import Deployment, listen_settings, load_deployment
+from .config import Deployment, credential_keys, listen_settings, load_deployment
+from .crypto import CryptoError, Vault
+from .library import BOT, Library, LibraryError
 from .service import ListenConfig, ListenService
 from .sources.base import MusicSource
 from .sources.kugou import KugouSource
@@ -112,6 +119,57 @@ def _sources(dep: Deployment) -> dict[str, MusicSource]:
     return found
 
 
+def _library(dep: Deployment, store: Store) -> Library:
+    accounts: dict[str, PlatformAccounts] = {"qq": QQMusicAccounts()}
+    if dep.netease_api:
+        accounts["netease"] = NeteaseAccounts(dep.netease_api)
+    if dep.kugou_api:
+        accounts["kugou"] = KugouAccounts(dep.kugou_api)
+    current, old = credential_keys()
+    try:
+        vault = Vault.from_env(current, old)
+    except CryptoError as e:
+        logger.error("[一起听] {}：扫码登录和 bot 会员账号不可用", e)
+        vault = None
+    if vault is None and not current:
+        logger.info("[一起听] 没有设置 LISTEN_CREDENTIAL_KEY：扫码登录和 bot 会员账号不可用，填用户 ID 导入照常")
+    return Library(store, accounts, vault)
+
+
+def _register_bot_accounts(library: Library) -> None:
+    """WebUI「一起听」里的 bot 会员账号：扫码登录后用来放会员歌。"""
+
+    def status() -> list[dict]:
+        kinds = {p["id"]: p["login_kinds"] for p in library.platforms()}
+        return [{**row, "login_kinds": kinds.get(row["platform"], [])} for row in library.credential_status(BOT)]
+
+    async def qr_start(platform: str, kind: str) -> dict:
+        try:
+            sid, start = await library.qr_start(BOT, platform, kind)
+        except LibraryError as e:
+            raise ValueError(str(e)) from e
+        return {"sid": sid, "image": start.image, "hint": start.hint}
+
+    async def qr_poll(sid: str) -> dict:
+        try:
+            return await library.qr_poll(BOT, sid)
+        except LibraryError as e:
+            raise ValueError(str(e)) from e
+
+    settings_store.set_account_panel("listen", AccountPanel(
+        title="bot 的会员账号",
+        help=(
+            "用来放会员歌。三个平台各登录一个会员账号（建议用小号）。登录信息加密保存，每 12 小时自动续一次；"
+            "失效了这里会显示，重新扫码就行。"
+            + ("" if library.vault else "\n还没有设置 LISTEN_CREDENTIAL_KEY，现在不能登录。")
+        ),
+        status=status,
+        qr_start=qr_start,
+        qr_poll=qr_poll,
+        logout=lambda platform: library.logout(BOT, platform),
+    ))
+
+
 deployment, disabled_reason = load_deployment()
 service: ListenService | None = None
 _server_task: asyncio.Task | None = None
@@ -119,6 +177,7 @@ _server = None
 _background: set[asyncio.Task] = set()
 
 if deployment is not None:
+    _store = Store(_data_dir() / "listen.db")
     service = ListenService(
         config=ListenConfig(
             public_url=deployment.public_url,
@@ -130,9 +189,12 @@ if deployment is not None:
             downgrade_over=lambda: int(listen_settings.downgrade_over),
         ),
         bridge=NoneBotBridge(),
-        store=Store(_data_dir() / "listen.db"),
+        store=_store,
         source_map=_sources(deployment),
+        library=_library(deployment, _store),
     )
+    assert service.library is not None
+    _register_bot_accounts(service.library)
 else:
     logger.warning("[一起听] 未启用：{}", disabled_reason)
 
@@ -187,6 +249,8 @@ async def _start() -> None:
     _server_task = loop.create_task(run())
     _background.add(loop.create_task(watch_whitelist()))
     service.hub.start()
+    if service.library is not None:
+        service.library.start()
     await service.enforce_whitelist()
     logger.info("[一起听] 已启动：{}（监听 {}:{}）", deployment.public_url, deployment.host, deployment.port)
 
@@ -197,6 +261,8 @@ async def _stop() -> None:
         task.cancel()
     if service is not None:
         await service.hub.stop()
+        if service.library is not None:
+            await service.library.stop()
         for source in service.sources.values():
             close = getattr(source, "close", None)
             if close:

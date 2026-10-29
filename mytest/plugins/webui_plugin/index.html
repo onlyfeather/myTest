@@ -511,7 +511,84 @@ function renderMain() {
       testBtn),
     h("div", { class: "card" }, s.fields.map(fieldRow)),
     (s.files || []).length ? h("div", { class: "card", style: "margin-top:16px" }, s.files.map((f) => fileRow(s, f))) : null,
+    s.accounts ? accountCard(s) : null,
   ].filter(Boolean));
+}
+
+/* 账号面板：扫码登录、退出。凭证只在服务端，这里只显示状态。 */
+const KIND_NAMES = { qq: "QQ 扫码", wx: "微信扫码", app: "扫码登录" };
+let qrTimer = 0;
+
+function accountCard(s) {
+  const a = s.accounts;
+  const rows = a.items.map((item) => {
+    const status = item.logged_in
+      ? h("span", { class: "badge set" }, `已登录${item.account_name ? "：" + item.account_name : ""}${item.vip ? " · 会员" : " · 不是会员"}`)
+      : item.expired ? h("span", { class: "badge", style: "color:var(--danger)" }, "已失效，需要重新扫码")
+      : h("span", { class: "badge" }, "未登录");
+    const buttons = (item.login_kinds || []).map((kind) =>
+      h("button", { class: "btn" + (item.logged_in ? "" : " primary"), type: "button", onclick: () => openQr(s, item, kind) },
+        (item.logged_in ? "换个账号 · " : "") + (KIND_NAMES[kind] || kind)));
+    const logout = item.logged_in || item.expired ? h("button", { class: "btn", type: "button", onclick: async () => {
+      if (!confirm(`退出${item.name}的登录吗？退出后这个平台的会员歌就放不了了。`)) return;
+      const r = await api(`/accounts/${encodeURIComponent(s.id)}/${encodeURIComponent(item.platform)}/logout`, { method: "POST" }).catch(() => null);
+      if (r && r.ok) { toast("已退出"); await reloadSection(s.id); }
+    } }, "退出") : null;
+    return h("div", { class: "row" },
+      h("div", {}, h("label", { class: "name" }, item.name), h("div", { class: "meta" }, status)),
+      h("div", {},
+        h("div", { class: "inline" }, ...buttons, logout),
+        item.expired && item.message ? h("div", { class: "err" }, item.message) : null,
+        !(item.login_kinds || []).length ? h("div", { class: "help" }, "扫码登录没有开启") : null));
+  });
+  return h("div", { style: "margin-top:16px" },
+    h("h3", { style: "margin:24px 0 8px;font-size:16px" }, a.title),
+    a.help ? h("p", { class: "help", style: "white-space:pre-line;margin:0 0 10px" }, a.help) : null,
+    a.error ? h("div", { class: "err" }, a.error) : null,
+    h("div", { class: "card" }, rows));
+}
+
+function closeQr() {
+  clearTimeout(qrTimer);
+  document.getElementById("qr-modal")?.remove();
+}
+
+async function openQr(s, item, kind) {
+  closeQr();
+  const text = h("p", { class: "help", style: "text-align:center" }, "二维码加载中…");
+  const img = h("img", { alt: "登录二维码", style: "display:block;width:220px;height:220px;margin:8px auto;border-radius:8px;background:#fff;object-fit:contain" });
+  const box = h("div", { class: "card", style: "padding:20px;max-width:320px;width:92vw;position:relative" },
+    h("h3", { style: "margin:0 0 4px;font-size:16px;text-align:center" }, `${item.name} · ${KIND_NAMES[kind] || kind}`),
+    img, text,
+    h("button", { class: "btn block", type: "button", onclick: closeQr }, "关闭"));
+  const modal = h("div", { id: "qr-modal", style: "position:fixed;inset:0;background:rgba(0,0,0,.5);display:grid;place-items:center;z-index:20",
+    onclick: (e) => { if (e.target === modal) closeQr(); } }, box);
+  document.body.append(modal);
+  const r = await api(`/accounts/${encodeURIComponent(s.id)}/${encodeURIComponent(item.platform)}/qr`,
+    { method: "POST", body: JSON.stringify({ kind }) }).catch(() => null);
+  if (!document.body.contains(modal)) return;
+  if (!r || !r.ok) { text.textContent = (r && r.message) || "二维码获取失败"; text.className = "err"; return; }
+  img.src = r.image;
+  text.textContent = (r.hint || "用手机扫码") + "，然后在手机上确认";
+  const deadline = Date.now() + 5 * 60 * 1000;
+  const poll = async () => {
+    if (!document.body.contains(modal)) return;
+    if (Date.now() > deadline) { text.textContent = "二维码过期了，关掉重新打开"; return; }
+    const p = await api(`/accounts/${encodeURIComponent(s.id)}/qr/${encodeURIComponent(r.sid)}`, { method: "POST" }).catch(() => null);
+    if (!document.body.contains(modal)) return;
+    if (!p || !p.ok) { text.textContent = (p && p.message) || "登录失败"; text.className = "err"; return; }
+    if (p.status === "scanned") text.textContent = "扫好了，在手机上点确认";
+    if (p.status === "expired") { text.textContent = p.message || "二维码过期了，关掉重新打开"; return; }
+    if (p.status === "refused") { text.textContent = "手机上取消了登录"; return; }
+    if (p.status === "done") {
+      closeQr();
+      toast(`${item.name}登录成功${p.account ? "：" + p.account : ""}${p.vip === false ? "（这个账号不是会员，会员歌还是放不了）" : ""}`, p.vip !== false);
+      await reloadSection(s.id);
+      return;
+    }
+    qrTimer = setTimeout(poll, 2000);
+  };
+  qrTimer = setTimeout(poll, 2000);
 }
 
 function renderNav() {

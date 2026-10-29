@@ -12,9 +12,10 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from .auth import AuthError, CodeBook, Identity, LinkSigner, Sessions
-from .bridge import BotBridge, Member, MembershipCache
+from .bridge import BotBridge, BotUnavailable, Member, MembershipCache
 from .hub import Hub
-from .sources.base import PLATFORM_NAMES, MusicSource, Stream, Track
+from .library import Library
+from .sources.base import PLATFORM_NAMES, MusicSource, Stream, Track, VipCredential
 from .sources.resolver import Sources
 from .store import Store
 from .sync import now_ms
@@ -55,6 +56,7 @@ class ListenService:
     store: Store
     source_map: dict[str, MusicSource]
     clock: Callable[[], int] = now_ms
+    library: Library | None = None
     sources: Sources = field(init=False)
     signer: LinkSigner = field(init=False)
     sessions: Sessions = field(init=False)
@@ -73,6 +75,22 @@ class ListenService:
         self._tracks: OrderedDict[str, Track] = OrderedDict()
         self._streams: dict[tuple[str, int], _CachedStream] = {}
         self._lyrics: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        if self.library is not None:
+            self._bind_vip(self.library)
+
+    def _bind_vip(self, library: Library) -> None:
+        """把 bot 的会员账号凭证交给各音源。登录、失效时清掉已缓存的播放地址。"""
+        for platform, source in self.source_map.items():
+            if isinstance(source, VipCredential):
+                source.bind_credential(
+                    lambda p=platform: library.bot_credential(p),
+                    lambda message, p=platform: library.bot_credential_failed(p, message),
+                )
+
+        def changed(platform: str) -> None:
+            self._streams = {k: v for k, v in self._streams.items() if not k[0].startswith(f"{platform}:")}
+
+        library.on_bot_credential_changed = changed
 
     # ------------------------------------------------------------ 白名单和成员
 
@@ -124,14 +142,29 @@ class ListenService:
         self.members.forget(group_id, qq)
         self.sessions.revoke_user(qq, group_id)
         await self.hub.kick(group_id, qq, "你已经不在群里了")
+        await self._drop_credentials_if_gone(qq)
+
+    async def _drop_credentials_if_gone(self, qq: str) -> None:
+        """不在任何白名单群里了：平台凭证立即删除（歌单和喜欢的音乐保留）。查不了群成员时先不删，下次再查。"""
+        if self.library is None or qq not in self.store.credential_owners():
+            return
+        try:
+            still_in = await self.groups_of(qq)
+        except BotUnavailable:
+            return
+        if not still_in:
+            self.library.forget_user(qq)
 
     async def enforce_whitelist(self) -> None:
-        """群被移出白名单：关房间，作废这个群的所有登录。"""
+        """群被移出白名单：关房间，作废这个群的所有登录；不在任何白名单群里的人，平台凭证删除。"""
         allowed = list(self.config.allowed_groups())
         for group_id in self.hub.groups():
             if group_id not in allowed:
                 await self.hub.close_room(group_id, "这个群的一起听已被关闭")
         self.store.delete_sessions_outside(allowed)
+        if self.library is not None:
+            for qq in self.store.credential_owners():
+                await self._drop_credentials_if_gone(qq)
 
     # ------------------------------------------------------------ 登录
 

@@ -75,6 +75,23 @@ class SettingField:
 
 
 @dataclass
+class AccountPanel:
+    """WebUI 里的「账号」卡片：列出几个平台账号的登录状态，可以扫码登录、退出。
+
+    status() 返回 [{platform, name, logged_in, expired, message, account_name, vip, login_kinds}]。
+    qr_start(platform, kind) 返回 {sid, image, hint}；qr_poll(sid) 返回 {status, message, account?}。
+    logout(platform) 退出登录。都不能返回凭证本身。
+    """
+
+    title: str
+    help: str
+    status: Callable[[], list[dict[str, Any]]]
+    qr_start: Callable[[str, str], Awaitable[dict[str, Any]]]
+    qr_poll: Callable[[str], Awaitable[dict[str, Any]]]
+    logout: Callable[[str], None]
+
+
+@dataclass
 class SettingSection:
     id: str
     title: str
@@ -87,6 +104,8 @@ class SettingSection:
     option_providers: dict[str, OptionsProvider] = field(default_factory=dict)
     # 文件槽（比如人设图）：WebUI 里显示上传、预览、删除。
     files: dict[str, FileSlot] = field(default_factory=dict)
+    # 账号面板（比如一起听的 bot 会员账号）：WebUI 里显示登录状态、扫码登录、退出。
+    accounts: AccountPanel | None = None
 
     def get_field(self, key: str) -> SettingField:
         for item in self.fields:
@@ -145,6 +164,22 @@ def coerce(spec: SettingField, value: Any) -> Any:
     if kind != "textarea":
         text = text.strip()
     return text
+
+
+_ACCOUNT_KEYS = ("platform", "name", "logged_in", "expired", "message", "account_name", "vip", "login_kinds",
+                 "refreshed_at")
+
+
+def _describe_accounts(panel: AccountPanel | None) -> dict[str, Any] | None:
+    if panel is None:
+        return None
+    try:
+        rows = panel.status()
+    except Exception as e:  # noqa: BLE001 账号状态读不出来时不影响整个配置页
+        return {"title": panel.title, "help": panel.help, "items": [], "error": str(e)[:200]}
+    # 只放行白名单字段，避免哪天 status() 不小心把凭证带出来
+    return {"title": panel.title, "help": panel.help,
+            "items": [{k: row.get(k) for k in _ACCOUNT_KEYS} for row in rows]}
 
 
 def _fmt(number: float) -> str:
@@ -207,6 +242,16 @@ class SettingsStore:
     def set_tester(self, section_id: str, tester: Callable[[], Awaitable[str]]) -> None:
         with self._lock:
             self._sections[section_id].tester = tester
+
+    def set_account_panel(self, section_id: str, panel: AccountPanel) -> None:
+        with self._lock:
+            self._sections[section_id].accounts = panel
+
+    def account_panel(self, section_id: str) -> AccountPanel:
+        section = self._sections.get(section_id)
+        if section is None or section.accounts is None:
+            raise KeyError(f"{section_id} 没有账号面板")
+        return section.accounts
 
     def add_file_slot(self, section_id: str, slot: FileSlot) -> None:
         with self._lock:
@@ -424,6 +469,7 @@ class SettingsStore:
                         }
                         for slot in section.files.values()
                     ],
+                    "accounts": _describe_accounts(section.accounts),
                 }
             )
         return result

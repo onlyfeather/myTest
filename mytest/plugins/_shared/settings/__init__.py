@@ -11,9 +11,19 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .registry import FileSlot, Picker, SectionView, SettingField, SettingSection, SettingsStore, coerce
+from .registry import (
+    AccountPanel,
+    FileSlot,
+    Picker,
+    SectionView,
+    SettingField,
+    SettingSection,
+    SettingsStore,
+    coerce,
+)
 
 __all__ = [
+    "AccountPanel",
     "FileSlot",
     "Picker",
     "SectionView",

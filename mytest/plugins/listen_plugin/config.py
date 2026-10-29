@@ -8,6 +8,8 @@
     LISTEN_TRUSTED_PROXIES=127.0.0.1,::1           # 只采信这些地址传来的 X-Forwarded-For
     NETEASE_API_URL=http://netease-api:3000        # 可选，api-enhanced；不填就不接网易云
     KUGOU_API_URL=http://kugou-api:3000            # 可选，KuGouMusicApi；不填就不接酷狗
+    LISTEN_CREDENTIAL_KEY=32 字节 base64           # 可选；平台登录凭证的加密密钥。不填就不能扫码登录（导入私密歌单、bot 会员账号）
+    LISTEN_CREDENTIAL_KEY_OLD=                     # 换密钥时临时填旧密钥，凭证会逐条用新密钥重新加密
 """
 
 from __future__ import annotations
@@ -87,6 +89,11 @@ class Deployment:
     trusted_proxies: tuple[str, ...]
     netease_api: str = ""
     kugou_api: str = ""
+
+
+def credential_keys() -> tuple[str, str]:
+    """(LISTEN_CREDENTIAL_KEY, LISTEN_CREDENTIAL_KEY_OLD)。在 config 之外不保存。"""
+    return _env("listen_credential_key"), _env("listen_credential_key_old")
 
 
 def load_deployment() -> tuple[Deployment | None, str]:

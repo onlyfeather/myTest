@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
+from .app_shared import RateLimiter
 from .auth import SESSION_TTL_MS, AuthError, Identity
 from .bridge import BotUnavailable
 from .hub import Connection
@@ -124,25 +125,6 @@ def client_ip(peer: str | None, forwarded: str | None, trusted: tuple[str, ...])
         if hop not in trusted:
             return hop
     return peer
-
-
-class RateLimiter:
-    def __init__(self, limit: int, window: float):
-        self.limit = limit
-        self.window = window
-        self._hits: dict[str, deque[float]] = {}
-
-    def allow(self, key: str) -> bool:
-        now = time.monotonic()
-        hits = self._hits.setdefault(key, deque())
-        while hits and now - hits[0] >= self.window:
-            hits.popleft()
-        if len(hits) >= self.limit:
-            return False
-        hits.append(now)
-        if len(self._hits) > 10_000:
-            self._hits = {k: v for k, v in self._hits.items() if v}
-        return True
 
 
 def create_app(service: ListenService) -> FastAPI:
@@ -431,6 +413,11 @@ def create_app(service: ListenService) -> FastAPI:
             await service.hub.push_queue(group_id)
             await service.hub.push_state(group_id)
             await system_chat(group_id, note)
+
+    if service.library is not None:
+        from . import library_api
+
+        library_api.register(app, service, service.library, current=current, same_origin=same_origin)
 
     # ------------------------------------------------------------ WebSocket
 

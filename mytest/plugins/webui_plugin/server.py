@@ -329,6 +329,59 @@ def create_router(
         path.unlink(missing_ok=True)
         return JSONResponse({"ok": True, "message": "已删除" if existed else "本来就没有上传"})
 
+    # ------------------------------------------------------------ 账号面板（扫码登录）
+
+    @router.post("/api/accounts/{section_id}/{platform}/qr", include_in_schema=False)
+    async def account_qr_start(section_id: str, platform: str, request: Request) -> JSONResponse:
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            panel = store.account_panel(section_id)
+        except KeyError:
+            return error(404, "这个分区没有账号")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        kind = str((body or {}).get("kind") or "")[:8] if isinstance(body, dict) else ""
+        try:
+            result = await panel.qr_start(platform[:16], kind)
+        except Exception as e:
+            return JSONResponse({"ok": False, "message": describe_exception(panel.title, e)})
+        return JSONResponse({"ok": True, **{k: result.get(k) for k in ("sid", "image", "hint")}},
+                            headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/accounts/{section_id}/qr/{sid}", include_in_schema=False)
+    async def account_qr_poll(section_id: str, sid: str, request: Request) -> JSONResponse:
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            panel = store.account_panel(section_id)
+        except KeyError:
+            return error(404, "这个分区没有账号")
+        try:
+            result = await panel.qr_poll(sid[:64])
+        except Exception as e:
+            return JSONResponse({"ok": False, "message": describe_exception(panel.title, e)})
+        return JSONResponse({"ok": True, **{k: result.get(k) for k in ("status", "message", "account", "vip")}},
+                            headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/accounts/{section_id}/{platform}/logout", include_in_schema=False)
+    async def account_logout(section_id: str, platform: str, request: Request) -> JSONResponse:
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            store.account_panel(section_id).logout(platform[:16])
+        except KeyError:
+            return error(404, "没有这个账号")
+        return JSONResponse({"ok": True})
+
     @router.post("/api/settings/{section_id}/test", include_in_schema=False)
     async def test_section(section_id: str, request: Request) -> JSONResponse:
         if not authed(request):

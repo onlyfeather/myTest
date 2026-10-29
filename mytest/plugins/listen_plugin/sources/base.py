@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
@@ -81,6 +82,28 @@ class Stream:
     url: str
     expires_in: int  # 秒
     bitrate: int  # kbps
+
+
+class VipCredential:
+    """音源取会员歌时用的 bot 会员账号凭证。由 Library 注入，音源只读不存。"""
+
+    def __init__(self) -> None:
+        self._get_credential: Callable[[], dict[str, Any] | None] = lambda: None
+        self._on_failed: Callable[[str], None] = lambda message: None
+
+    def bind_credential(self, get: Callable[[], dict[str, Any] | None], on_failed: Callable[[str], None]) -> None:
+        self._get_credential = get
+        self._on_failed = on_failed
+
+    def credential(self) -> dict[str, Any] | None:
+        return self._get_credential()
+
+    def credential_failed(self, message: str) -> None:
+        self._on_failed(message)
+
+    @property
+    def vip_ready(self) -> bool:
+        return self._get_credential() is not None
 
 
 class MusicSource(Protocol):

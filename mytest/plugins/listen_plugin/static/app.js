@@ -18,7 +18,10 @@ const s = reactive({
   q: '', results: [], searching: false, searchError: '', vipReady: false,
   platforms: [], platform: 'qq',
   lyrics: [], lyricsState: '', showLyrics: false,
-  profile: null,
+  profile: null, profileLib: null, profileTab: 'favorites', playlistView: null,
+  liked: new Set(),
+  lib: null, libPlatform: '', uid: '', libBusy: false, libError: '',
+  qr: null, importList: null, importVia: '', importPicked: {},
   chatText: '', toast: '', tab: 'now',
 });
 
@@ -79,6 +82,7 @@ async function boot() {
   s.me = me;
   s.notice = ''; // 已经登录了，链接失效的提示没有意义
   loadPlatforms();
+  loadLiked();
   connect();
 }
 
@@ -452,9 +456,139 @@ function scrollLyric(index) {
 
 async function openProfile(qq) {
   s.profile = { qq, loading: true };
-  const r = await api('/api/members/' + encodeURIComponent(qq));
+  s.profileLib = null;
+  s.profileTab = 'favorites';
+  s.playlistView = null;
+  const [r, lib] = await Promise.all([
+    api('/api/members/' + encodeURIComponent(qq)),
+    api('/api/library/' + encodeURIComponent(qq)),
+  ]);
   if (!s.profile || s.profile.qq !== qq) return;
   s.profile = r.ok ? r : { qq, error: r.message || '打不开资料卡' };
+  s.profileLib = lib.ok ? lib : null;
+}
+
+async function openPlaylist(p) {
+  s.playlistView = { ...p, loading: true, tracks: [] };
+  const r = await api('/api/playlists/' + encodeURIComponent(p.id));
+  if (!s.playlistView || s.playlistView.id !== p.id) return;
+  s.playlistView = r.ok ? r : { ...p, error: r.message || '打不开歌单', tracks: [] };
+}
+
+// ---------------------------------------------------------------- 喜欢的音乐
+
+async function loadLiked() {
+  const r = await api('/api/favorites/refs');
+  if (r.ok) s.liked = new Set(r.refs);
+}
+
+async function toggleLike(track) {
+  const on = s.liked.has(track.ref);
+  const r = await api(on ? '/api/favorites/remove' : '/api/favorites', { method: 'POST', body: { ref: track.ref } });
+  if (!r.ok) { toast(r.message || '没成功'); return; }
+  const next = new Set(s.liked);
+  if (on) next.delete(track.ref); else next.add(track.ref);
+  s.liked = next;
+  toast(on ? '从喜欢的音乐里拿掉了' : '加到喜欢的音乐了');
+  if (s.profileLib && s.profileLib.mine) openProfile(s.profile.qq);
+}
+
+// ---------------------------------------------------------------- 我的曲库：账号、扫码、导入
+
+async function loadLib() {
+  const r = await api('/api/library/accounts');
+  if (!r.ok) { s.libError = r.message || '读不到'; return; }
+  s.lib = r;
+  if (!s.libPlatform && r.platforms.length) s.libPlatform = r.platforms[0].id;
+}
+
+const libPlatformInfo = () => (s.lib ? s.lib.platforms.find((p) => p.id === s.libPlatform) : null);
+const libAccount = () => (s.lib ? s.lib.accounts.find((a) => a.platform === s.libPlatform) : null);
+
+let qrTimer = 0;
+async function startQr(kind) {
+  clearTimeout(qrTimer);
+  s.libError = '';
+  s.importList = null;
+  s.qr = { loading: true, kind };
+  const r = await api('/api/library/qr', { method: 'POST', body: { platform: s.libPlatform, kind } });
+  if (!r.ok) { s.qr = null; s.libError = r.message || '二维码获取失败'; return; }
+  s.qr = { sid: r.sid, image: r.image, hint: r.hint, status: 'waiting', kind, expires: Date.now() + 5 * 60 * 1000 };
+  qrTimer = setTimeout(pollQr, 2000);
+}
+
+async function pollQr() {
+  const qr = s.qr;
+  if (!qr || !qr.sid) return;
+  if (Date.now() > qr.expires) { s.qr = { ...qr, status: 'expired' }; return; }
+  const r = await api('/api/library/qr/' + encodeURIComponent(qr.sid));
+  if (s.qr !== qr) return;
+  if (!r.ok) { s.qr = null; s.libError = r.message || '登录失败'; return; }
+  if (r.status === 'done') {
+    s.qr = null;
+    toast(`登录好了${r.account ? '：' + r.account : ''}`);
+    await loadLib();
+    showImport(r.playlists || [], 'login');
+    if (r.message) s.libError = r.message;
+    return;
+  }
+  s.qr = { ...qr, status: r.status };
+  if (r.status === 'expired' || r.status === 'refused') return;
+  qrTimer = setTimeout(pollQr, 2000);
+}
+
+function cancelQr() { clearTimeout(qrTimer); s.qr = null; }
+
+function showImport(list, via) {
+  s.importList = list;
+  s.importVia = via;
+  // 默认勾上“我喜欢”和所有公开歌单；私密歌单默认不勾（导入后也是仅自己可见）
+  s.importPicked = Object.fromEntries(list.map((p) => [p.remote_id, !p.private]));
+}
+
+async function lookupUid() {
+  const uid = s.uid.trim();
+  if (!uid) return;
+  s.libBusy = true;
+  s.libError = '';
+  cancelQr();
+  const r = await api('/api/library/uid', { method: 'POST', body: { platform: s.libPlatform, account_id: uid } });
+  s.libBusy = false;
+  if (!r.ok) { s.libError = r.message || '查不到'; return; }
+  if (!r.playlists.length) { s.libError = '这个账号没有公开歌单'; return; }
+  showImport(r.playlists, 'uid');
+}
+
+async function doImport() {
+  const ids = Object.keys(s.importPicked).filter((k) => s.importPicked[k]);
+  if (!ids.length) { s.libError = '先勾选要导入的歌单'; return; }
+  s.libBusy = true;
+  s.libError = '';
+  const r = await api('/api/library/import', { method: 'POST', body: { platform: s.libPlatform, via: s.importVia, remote_ids: ids } });
+  s.libBusy = false;
+  if (!r.ok) { s.libError = r.message || '导入失败'; return; }
+  const total = r.imported.reduce((n, p) => n + p.tracks, 0);
+  toast(`导入了 ${r.imported.length} 个歌单，共 ${total} 首`);
+  s.importList = null;
+  if (s.me) openProfile(s.me.qq);
+}
+
+async function unbind() {
+  const acc = libAccount();
+  if (!acc || !confirm(`解绑${acc.name}吗？登录信息会马上删掉。已经导入的歌单会留着，但私密歌单以后不会再同步。`)) return;
+  const r = await api(`/api/library/accounts/${encodeURIComponent(s.libPlatform)}/logout`, { method: 'POST', body: {} });
+  if (r.ok) { toast('解绑了'); loadLib(); }
+}
+
+async function setHidden(p, hidden) {
+  const r = await api(`/api/playlists/${encodeURIComponent(p.id)}/visibility`, { method: 'POST', body: { hidden } });
+  if (r.ok) { p.hidden = hidden; toast(hidden ? '这个歌单现在只有你自己看得到' : '这个歌单群友也能看到了'); }
+}
+
+async function removePlaylist(p) {
+  if (!confirm(`从一起听里删掉「${p.name}」吗？平台上的歌单不受影响。`)) return;
+  const r = await api(`/api/playlists/${encodeURIComponent(p.id)}/delete`, { method: 'POST', body: {} });
+  if (r.ok) { toast('删掉了'); if (s.me) openProfile(s.me.qq); }
 }
 
 function sendChat() {
@@ -508,6 +642,11 @@ const App = {
     return {
       s, track, position, canControl, isOwner, codeLeft, fmt, mine,
       lyricIndex, currentLine, openProfile, pickPlatform,
+      toggleLike, openPlaylist, loadLib, startQr, cancelQr, lookupUid, doImport, unbind, setHidden, removePlaylist,
+      libPlatformInfo, libAccount,
+      openMine() { s.tab = 'mine'; if (!s.lib) loadLib(); if (s.me) openProfile(s.me.qq); },
+      pickLibPlatform(id) { s.libPlatform = id; s.importList = null; s.libError = ''; s.uid = ''; cancelQr(); },
+      when(ms) { if (!ms) return ''; const d = new Date(ms); return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; },
       platformName(id) { const p = s.platforms.find((x) => x.id === id); return p ? p.name : id; },
       boot, startCode, logout, unlock, control, search, addTrack, sendChat,
       resume() { localPaused = false; control('play'); },
@@ -566,6 +705,8 @@ const App = {
               <div class="ellipsis">{{ t.title }} <span class="tag vip" v-if="t.vip">会员</span></div>
               <div class="muted small ellipsis">{{ t.artists }} · {{ fmt(t.duration_ms) }}</div>
             </div>
+            <button class="icon like" :class="{ on: s.liked.has(t.ref) }" @click="toggleLike(t)"
+                    :title="s.liked.has(t.ref) ? '从喜欢的音乐里拿掉' : '加到喜欢的音乐'">{{ s.liked.has(t.ref) ? '♥' : '♡' }}</button>
             <button class="icon" @click="addTrack(t)"
                     :title="t.vip && !s.vipReady ? '会员歌：会到别的平台找同一首' : '点歌'">＋</button>
           </li>
@@ -593,6 +734,8 @@ const App = {
           <span class="tag">{{ platformName(track.platform) }}</span>
           <template v-if="s.state.current.added_by_name"> · <a class="link" @click="openProfile(s.state.current.added_by)">{{ s.state.current.added_by_name }}</a> 点的</template>
         </div>
+        <button class="icon like big-like" :class="{ on: s.liked.has(track.ref) }" @click="toggleLike(track)"
+                :title="s.liked.has(track.ref) ? '从喜欢的音乐里拿掉' : '加到喜欢的音乐'">{{ s.liked.has(track.ref) ? '♥ 喜欢' : '♡ 喜欢' }}</button>
         <div class="muted small current-line" v-if="!s.showLyrics && currentLine">{{ currentLine }}</div>
       </div>
       <div class="progress" v-if="track">
@@ -636,6 +779,7 @@ const App = {
       <header>
         <span>在听 {{ s.members.length }} 人</span><span class="grow"></span>
         <span class="muted small ellipsis">{{ s.me && s.me.name }}</span>
+        <button class="icon small" @click="openMine()" title="我的喜欢的音乐、歌单和导入">我的</button>
         <button class="icon small" @click="logout()">退出</button>
       </header>
       <div class="body members">
@@ -669,6 +813,7 @@ const App = {
     <button :class="{ on: s.tab === 'queue' }" @click="s.tab = 'queue'">队列</button>
     <button :class="{ on: s.tab === 'search' }" @click="s.tab = 'search'">点歌</button>
     <button :class="{ on: s.tab === 'chat' }" @click="s.tab = 'chat'">聊天</button>
+    <button @click="openMine()">我的</button>
   </nav>
 </template>
 
@@ -692,6 +837,141 @@ const App = {
       <p class="muted small">
         {{ s.profile.online ? '正在一起听' : '不在房间里' }}<span v-if="s.profile.playing_theirs"> · 现在放的是 TA 点的</span><span v-if="s.profile.in_queue"> · 接下来还有 {{ s.profile.in_queue }} 首</span>
       </p>
+
+      <template v-if="s.profileLib">
+        <div class="seg wide">
+          <button :class="{ on: s.profileTab === 'favorites' }" @click="s.profileTab = 'favorites'; s.playlistView = null">
+            喜欢的音乐 {{ s.profileLib.favorites.count }}</button>
+          <button :class="{ on: s.profileTab === 'playlists' }" @click="s.profileTab = 'playlists'; s.playlistView = null">
+            歌单 {{ s.profileLib.playlists.length }}</button>
+          <button v-if="s.profileLib.mine" :class="{ on: s.profileTab === 'import' }"
+                  @click="s.profileTab = 'import'; s.playlistView = null; loadLib()">导入</button>
+        </div>
+
+        <div class="lib-body" v-if="s.profileTab === 'favorites'">
+          <p class="muted small" v-if="!s.profileLib.favorites.tracks.length">
+            {{ s.profileLib.mine ? '还没有喜欢的歌。点歌时点 ♡ 就能加进来' : 'TA 还没有喜欢的歌' }}</p>
+          <ul class="list">
+            <li v-for="t in s.profileLib.favorites.tracks" :key="t.ref">
+              <img class="thumb" v-if="t.cover" :src="t.cover" loading="lazy" alt="">
+              <div class="grow"><div class="ellipsis">{{ t.title }}</div>
+                <div class="muted small ellipsis">{{ t.artists }} · {{ platformName(t.platform) }}</div></div>
+              <button class="icon like" :class="{ on: s.liked.has(t.ref) }" @click="toggleLike(t)">{{ s.liked.has(t.ref) ? '♥' : '♡' }}</button>
+              <button class="icon" @click="addTrack(t)" title="点歌">＋</button>
+            </li>
+          </ul>
+        </div>
+
+        <div class="lib-body" v-else-if="s.profileTab === 'playlists'">
+          <template v-if="s.playlistView">
+            <div class="row">
+              <button class="icon" @click="s.playlistView = null" title="返回">‹</button>
+              <div class="grow ellipsis"><b>{{ s.playlistView.name }}</b>
+                <span class="muted small"> · {{ platformName(s.playlistView.platform) }} · {{ s.playlistView.tracks.length }} 首</span></div>
+            </div>
+            <p class="muted small" v-if="s.playlistView.loading">加载中…</p>
+            <p class="error small" v-if="s.playlistView.error">{{ s.playlistView.error }}</p>
+            <p class="error small" v-if="s.playlistView.sync_error">同步出错：{{ s.playlistView.sync_error }}</p>
+            <ul class="list">
+              <li v-for="t in s.playlistView.tracks" :key="t.ref">
+                <div class="grow"><div class="ellipsis">{{ t.title }} <span class="tag vip" v-if="t.vip">会员</span></div>
+                  <div class="muted small ellipsis">{{ t.artists }} · {{ fmt(t.duration_ms) }}</div></div>
+                <button class="icon like" :class="{ on: s.liked.has(t.ref) }" @click="toggleLike(t)">{{ s.liked.has(t.ref) ? '♥' : '♡' }}</button>
+                <button class="icon" @click="addTrack(t)" title="点歌">＋</button>
+              </li>
+            </ul>
+          </template>
+          <template v-else>
+            <p class="muted small" v-if="!s.profileLib.playlists.length">
+              {{ s.profileLib.mine ? '还没有导入歌单。点上面的「导入」' : 'TA 还没有公开的歌单' }}</p>
+            <ul class="list">
+              <li v-for="p in s.profileLib.playlists" :key="p.id">
+                <img class="thumb" v-if="p.cover" :src="p.cover" loading="lazy" alt="">
+                <a class="grow link-row" @click="openPlaylist(p)">
+                  <div class="ellipsis">{{ p.name }} <span class="tag" v-if="p.hidden">仅自己可见</span></div>
+                  <div class="muted small ellipsis">{{ platformName(p.platform) }} · {{ p.track_count }} 首<span v-if="p.synced_at"> · {{ when(p.synced_at) }} 同步</span>
+                    <span class="error" v-if="p.sync_error"> · 同步出错</span></div>
+                </a>
+                <template v-if="s.profileLib.mine">
+                  <button class="icon small" @click="setHidden(p, !p.hidden)">{{ p.hidden ? '公开' : '隐藏' }}</button>
+                  <button class="icon" @click="removePlaylist(p)" title="从一起听里删掉">✕</button>
+                </template>
+              </li>
+            </ul>
+          </template>
+        </div>
+
+        <div class="lib-body" v-else-if="s.profileTab === 'import'">
+          <p class="muted small" v-if="!s.lib">加载中…</p>
+          <template v-else>
+            <div class="seg">
+              <button v-for="p in s.lib.platforms" :key="p.id" :class="{ on: s.libPlatform === p.id }"
+                      @click="pickLibPlatform(p.id)">{{ p.name }}</button>
+            </div>
+            <template v-if="libPlatformInfo()">
+              <div class="account-line" v-if="libAccount() && (libAccount().logged_in || libAccount().expired || libAccount().account_id)">
+                <span v-if="libAccount().logged_in">已登录 {{ libAccount().account_name || libAccount().account_id }}</span>
+                <span v-else-if="libAccount().expired" class="error">登录失效了，重新扫码才能继续同步私密歌单</span>
+                <span v-else class="muted">已关联 {{ libAccount().account_name || libAccount().account_id }}（只同步公开歌单）</span>
+                <button class="icon small" v-if="libAccount().logged_in || libAccount().expired" @click="unbind()">解绑</button>
+              </div>
+
+              <div v-if="!s.qr && !s.importList">
+                <p class="small" v-if="libPlatformInfo().login_kinds.length">扫码登录：能导入全部歌单，包括私密的和“我喜欢”，每天自动同步。</p>
+                <div class="row wrap" v-if="libPlatformInfo().login_kinds.length">
+                  <button v-for="k in libPlatformInfo().login_kinds" :key="k" class="primary" @click="startQr(k)">
+                    {{ k === 'wx' ? '微信扫码' : k === 'qq' ? 'QQ 扫码' : '扫码登录' }}</button>
+                </div>
+                <p class="muted small" v-else-if="s.lib && !s.lib.enabled">扫码登录没有开启（管理员还没配置）。</p>
+                <template v-if="libPlatformInfo().uid_import">
+                  <p class="small">或者填{{ libPlatformInfo().uid_label }}：只能导入公开歌单。</p>
+                  <form class="row" @submit.prevent="lookupUid()">
+                    <input v-model="s.uid" :placeholder="libPlatformInfo().uid_label" inputmode="numeric" maxlength="20">
+                    <button :disabled="s.libBusy">查找</button>
+                  </form>
+                </template>
+              </div>
+
+              <div class="qr" v-if="s.qr">
+                <p class="muted" v-if="s.qr.loading">二维码加载中…</p>
+                <template v-else>
+                  <img :src="s.qr.image" alt="登录二维码">
+                  <p class="small" v-if="s.qr.status === 'waiting'">{{ s.qr.hint }}</p>
+                  <p class="small" v-else-if="s.qr.status === 'scanned'">扫好了，在手机上点确认</p>
+                  <p class="small error" v-else-if="s.qr.status === 'expired'">二维码过期了</p>
+                  <p class="small error" v-else-if="s.qr.status === 'refused'">手机上取消了</p>
+                  <p class="muted small mobile-only">用的是手机？先截图，再在 App 里扫一扫 → 从相册选。</p>
+                  <div class="row center-row">
+                    <button v-if="s.qr.status === 'expired' || s.qr.status === 'refused'" class="primary" @click="startQr(s.qr.kind)">换一个</button>
+                    <button @click="cancelQr()">取消</button>
+                  </div>
+                </template>
+              </div>
+
+              <div v-if="s.importList">
+                <p class="small">勾选要导入的歌单（私密歌单导入后也只有你自己看得到）：</p>
+                <ul class="list">
+                  <li v-for="p in s.importList" :key="p.remote_id">
+                    <label class="row grow">
+                      <input type="checkbox" class="check" v-model="s.importPicked[p.remote_id]">
+                      <span class="grow ellipsis">{{ p.name }}</span>
+                      <span class="tag" v-if="p.liked">我喜欢</span>
+                      <span class="tag" v-if="p.private">私密</span>
+                      <span class="muted small">{{ p.track_count }} 首</span>
+                    </label>
+                  </li>
+                </ul>
+                <p class="muted small" v-if="!s.importList.length">没有可以导入的歌单</p>
+                <div class="row">
+                  <button class="primary" :disabled="s.libBusy" @click="doImport()">{{ s.libBusy ? '导入中…' : '导入' }}</button>
+                  <button @click="s.importList = null">取消</button>
+                </div>
+              </div>
+            </template>
+            <p class="error small" v-if="s.libError">{{ s.libError }}</p>
+          </template>
+        </div>
+      </template>
     </template>
   </div>
 </div>

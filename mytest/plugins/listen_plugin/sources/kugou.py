@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+import secrets
+import time
 
 import httpx
 
-from .base import SourceError, SourceUnavailable, Stream, Track, https
+from .base import SourceError, SourceUnavailable, Stream, Track, VipCredential, https
 
 _HASH = re.compile(r"^[0-9A-Fa-f]{32}$")
 # Privilege：0 免费、8 免费（部分音质）、10 会员
@@ -24,11 +26,11 @@ def _cover(image: str) -> str:
     return https(image.replace("{size}", "400")) if image else ""
 
 
-class KugouSource:
+class KugouSource(VipCredential):
     platform = "kugou"
-    vip_ready = False
 
     def __init__(self, base_url: str, *, timeout: float = 8.0, transport: httpx.AsyncBaseTransport | None = None):
+        super().__init__()
         self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout, transport=transport)
         self._dfid = ""
         self._lock = asyncio.Lock()
@@ -88,25 +90,49 @@ class KugouSource:
 
     async def stream(self, track: Track, bitrate: int = 320) -> Stream:
         album_id, _, mix_id = track.file_id.partition("_")
+        cred = self.credential() if track.vip else None
         for attempt in range(2):
-            dfid = await self._device(renew=attempt > 0)
-            data = await self._get(
-                "/song/url",
-                hash=track.id,
-                album_id=album_id,
-                album_audio_id=mix_id,
-                quality="320" if bitrate >= 320 else "128",
-                cookie=f"dfid={dfid}",
-            )
-            if data.get("errcode") == 20028:  # 需要验证：dfid 失效，重新注册一次
+            params = {
+                "hash": track.id,
+                "album_id": album_id or "0",
+                "album_audio_id": mix_id or "0",
+                "quality": "320" if bitrate >= 320 else "128",
+            }
+            if cred:
+                # 会员账号的 token 放请求体（不进 KuGouMusicApi 的访问日志），URL 带随机数绕开缓存
+                cookie = "; ".join(f"{k}={cred[k]}" for k in ("token", "userid", "dfid") if cred.get(k))
+                data = await self._post("/song/url", cookie, **params)
+            else:
+                dfid = await self._device(renew=attempt > 0)
+                data = await self._get("/song/url", cookie=f"dfid={dfid}", **params)
+            if data.get("errcode") == 20028 and not cred:  # 需要验证：dfid 失效，重新注册一次
                 continue
+            if cred and int(data.get("error_code") or data.get("errcode") or 0) in (20010, 20018, 51002):
+                self.credential_failed("酷狗会员账号登录失效了")
+                raise SourceError("酷狗会员账号登录失效了")
             urls = [https(u) for u in (data.get("url") or []) + (data.get("backupUrl") or []) if u]
             if data.get("status") == 1 and urls:
                 return Stream(url=urls[0], expires_in=1800, bitrate=320 if bitrate >= 320 else 128)
             if bitrate >= 320:
                 return await self.stream(track, bitrate=128)
+            if cred:
+                self.credential_failed("酷狗会员账号取不到会员歌，可能会员过期了")
             break
         raise SourceError("酷狗没有给播放地址，可能是会员歌或者已经下架")
+
+    async def _post(self, path: str, cookie: str, **params: str | int) -> dict:
+        query: dict[str, str | int] = {**params, "timestamp": time.time_ns(), "nonce": secrets.token_hex(8)}
+        try:
+            resp = await self._client.post(path, params=query, data={"cookie": cookie})
+        except httpx.HTTPError as e:
+            raise SourceUnavailable(f"酷狗接口连不上（{type(e).__name__}）") from e
+        try:
+            data = resp.json()
+        except ValueError:
+            raise SourceUnavailable(f"酷狗接口返回格式不对（HTTP {resp.status_code}）") from None
+        if not isinstance(data, dict):
+            raise SourceUnavailable("酷狗接口返回格式不对")
+        return data
 
     async def lyrics(self, track: Track) -> tuple[str, str]:
         found = await self._get("/search/lyric", hash=track.id)

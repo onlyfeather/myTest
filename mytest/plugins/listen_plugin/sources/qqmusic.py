@@ -1,6 +1,6 @@
 """QQ 音乐（qqmusic-api-python，进程内调用）。
 
-M1 不带登录凭证：能搜索、能放免费歌；会员歌拿不到地址，M3 接入 bot 的会员账号后解决。
+搜索、歌词不需要登录。会员歌取地址时用 bot 的会员账号凭证（WebUI「一起听」里扫码登录）。
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import asyncio
 import re
 from typing import Any
 
-from .base import SourceError, SourceUnavailable, Stream, Track
+from .base import SourceError, SourceUnavailable, Stream, Track, VipCredential
 
 # 播放地址的 CDN。官方调度接口给的都是 http，这里用同一批里支持 https 的域名，浏览器不会当成混合内容拦掉。
 CDN = "https://ws.stream.qqmusic.qq.com/"
@@ -24,11 +24,11 @@ def _is_vip(pay: Any) -> bool:
     return bool(pay and (pay.pay_play or pay.pay_month))
 
 
-class QQMusicSource:
+class QQMusicSource(VipCredential):
     platform = "qq"
-    vip_ready = False  # M3 接入 bot 的会员账号后改为按凭证判断
 
     def __init__(self) -> None:
+        super().__init__()
         self._client: Any = None
         self._lock = asyncio.Lock()
 
@@ -72,19 +72,27 @@ class QQMusicSource:
         return tracks
 
     async def stream(self, track: Track, bitrate: int = 320) -> Stream:
+        from qqmusic_api import Credential
         from qqmusic_api.modules.song import SongFileInfo, SongFileType
 
         client = await self._get()
         file_type = SongFileType.MP3_320 if bitrate >= 320 else SongFileType.MP3_128
         info = SongFileInfo(mid=track.id, media_mid=track.file_id or None)
+        raw = self.credential() if track.vip else None
+        cred = Credential.model_validate(raw) if raw else None
         try:
-            res = await client.song.get_song_urls([info], file_type=file_type)
+            res = await client.song.get_song_urls([info], file_type=file_type, credential=cred)
         except Exception as e:
+            if cred is not None and type(e).__name__ in ("CredentialExpiredError", "CredentialInvalidError"):
+                self.credential_failed("QQ 音乐会员账号登录失效了")
+                raise SourceError("QQ 音乐会员账号登录失效了") from e
             raise SourceUnavailable(f"QQ 音乐取播放地址失败（{type(e).__name__}）") from e
         item = res.data[0] if res.data else None
         if (item is None or not item.purl) and bitrate >= 320:
             return await self.stream(track, bitrate=128)
         if item is None or not item.purl:
+            if cred is not None:
+                self.credential_failed("QQ 音乐会员账号取不到会员歌，可能登录失效或者会员过期了")
             raise SourceError("QQ 音乐没有给播放地址，可能是会员歌或者已经下架")
         return Stream(url=CDN + item.purl, expires_in=int(res.expiration or 7200), bitrate=min(bitrate, 320))
 
