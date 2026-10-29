@@ -437,6 +437,8 @@ WebUI「一起听」分区：白名单群、房间人数上限、默认音质、
    ```
 
 2. docker-compose 端口映射：`127.0.0.1:8090:8090`（只给本机反代访问）。
+   `listen.db` 在 localstore 的数据目录里（容器里是 `/root/.local/share/nonebot2/listen_plugin/`），
+   必须挂成卷，例如 `./data/localstore:/root/.local/share/nonebot2`，否则重建容器会丢掉登录信息和歌单。
 3. WebUI「一起听」里填白名单群号。
 4. 反代（Caddy 示例，自动 HTTPS，WebSocket 自动转发）：
 

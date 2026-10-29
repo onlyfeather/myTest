@@ -528,9 +528,14 @@ function accountCard(s) {
       ? h("span", { class: "badge set" }, `已登录${item.account_name ? "：" + item.account_name : ""}${item.vip ? " · 会员" : " · 不是会员"}`)
       : item.expired ? h("span", { class: "badge", style: "color:var(--danger)" }, "已失效，需要重新扫码")
       : h("span", { class: "badge" }, "未登录");
-    const buttons = (item.login_kinds || []).map((kind) =>
+    const kinds = item.login_kinds || [];
+    const kindButtons = () => kinds.map((kind) =>
       h("button", { class: "btn" + (item.logged_in ? "" : " primary"), type: "button", onclick: () => openQr(s, item, kind) },
-        (item.logged_in ? "换个账号 · " : "") + kindName(item, kind)));
+        kinds.length === 1 && item.logged_in ? "换个账号" : kindName(item, kind)));
+    // 已登录又有多种扫码方式时，先只放一个「换个账号」，点了再展开扫码方式，免得一行挤不下
+    const buttons = item.logged_in && kinds.length > 1
+      ? [h("button", { class: "btn", type: "button", onclick: (e) => e.currentTarget.replaceWith(...kindButtons()) }, "换个账号")]
+      : kindButtons();
     const logout = item.logged_in || item.expired ? h("button", { class: "btn", type: "button", onclick: async () => {
       if (!confirm(`退出${item.name}的登录吗？退出后这个平台的会员歌就放不了了。`)) return;
       const r = await api(`/accounts/${encodeURIComponent(s.id)}/${encodeURIComponent(item.platform)}/logout`, { method: "POST" }).catch(() => null);
@@ -539,7 +544,7 @@ function accountCard(s) {
     return h("div", { class: "row" },
       h("div", {}, h("label", { class: "name" }, item.name), h("div", { class: "meta" }, status)),
       h("div", {},
-        h("div", { class: "inline" }, ...buttons, logout),
+        h("div", { class: "inline", style: "flex-wrap:wrap" }, ...buttons, logout),
         item.expired && item.message ? h("div", { class: "err" }, item.message) : null,
         !(item.login_kinds || []).length ? h("div", { class: "help" }, "扫码登录没有开启") : null));
   });

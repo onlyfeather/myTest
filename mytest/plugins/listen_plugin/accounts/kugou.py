@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import secrets
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -29,6 +30,39 @@ from .base import (
 # /login/qr/check 的 data.status
 _QR = {0: "expired", 1: "waiting", 2: "scanned", 4: "done"}
 _VIP_PRIVILEGE = 10
+
+
+_BEIJING = timezone(timedelta(hours=8))
+# 普通酷狗的会员到期时间：su_vip 豪华/超级 VIP，vip 普通 VIP，m 音乐包
+_VIP_END_KEYS = ("su_vip_end_time", "vip_end_time", "m_end_time")
+
+
+def vip_active(data: dict[str, Any]) -> bool:
+    """/user/vip/detail 的 data 里有没有正在生效的会员。
+
+    busi_vip 只是概念版的会员；实测（2026-10-29）普通酷狗的超级 VIP 在 busi_vip 里是空记录（is_vip=0），
+    要看顶层的 is_vip 和各种会员的到期时间（北京时间，"2026-11-06 23:24:09"）。
+    """
+    if _int(data.get("is_vip")) == 1:
+        return True
+    if any(isinstance(v, dict) and _int(v.get("is_vip")) == 1 for v in data.get("busi_vip") or []):
+        return True
+    now = datetime.now(_BEIJING)
+    for key in _VIP_END_KEYS:
+        try:
+            end = datetime.strptime(str(data.get(key) or ""), "%Y-%m-%d %H:%M:%S").replace(tzinfo=_BEIJING)
+        except ValueError:
+            continue
+        if end > now:
+            return True
+    return False
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def auth_header(cred: dict[str, Any]) -> dict[str, str]:
@@ -94,8 +128,7 @@ class KugouAccounts:
         if body.get("status") != 1 or not data:
             raise CredentialExpired("酷狗登录已经失效，需要重新扫码")
         vip = await self._call("/user/vip/detail", credential)
-        busi = ((vip.get("data") or {}).get("busi_vip") or [])
-        is_vip = any(int(v.get("is_vip") or 0) for v in busi if isinstance(v, dict))
+        is_vip = vip_active(vip.get("data") or {})
         return AccountInfo(str(credential.get("userid")), str(data.get("nickname") or ""), vip=is_vip)
 
     async def refresh(self, credential: dict[str, Any]) -> dict[str, Any]:

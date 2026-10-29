@@ -620,6 +620,26 @@ def kugou_server_cookie(request: httpx.Request) -> dict[str, str]:
     return out
 
 
+def test_kugou_vip_detection():
+    from datetime import datetime, timedelta, timezone
+
+    from mytest.plugins.listen_plugin.accounts.kugou import vip_active
+
+    beijing = timezone(timedelta(hours=8))
+    fmt = "%Y-%m-%d %H:%M:%S"
+    future = (datetime.now(beijing) + timedelta(days=7)).strftime(fmt)
+    past = (datetime.now(beijing) - timedelta(days=1)).strftime(fmt)
+    empty_concept = [{"is_vip": 0, "busi_type": "", "product_type": "", "vip_end_time": ""}, {}]
+    # 实测的样子：普通酷狗超级 VIP，busi_vip（概念版）是空记录
+    assert vip_active({"is_vip": 0, "su_vip_end_time": future, "vip_end_time": "", "busi_vip": empty_concept})
+    assert vip_active({"is_vip": 1, "busi_vip": empty_concept})
+    assert vip_active({"busi_vip": [{"is_vip": 1}]}), "concept VIP"
+    assert vip_active({"m_end_time": future}), "music package"
+    assert not vip_active({"is_vip": 0, "su_vip_end_time": past, "vip_end_time": "0000-00-00 00:00:00",
+                           "busi_vip": empty_concept})
+    assert not vip_active({"is_vip": "x", "busi_vip": None})
+
+
 def test_kugou_auth_header_has_no_spaces():
     from mytest.plugins.listen_plugin.accounts.kugou import auth_header
 
