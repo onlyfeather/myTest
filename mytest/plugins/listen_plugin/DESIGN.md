@@ -1,6 +1,6 @@
 # 一起听 设计文档
 
-状态：M1、M2、M3 已完成（见第 20–22 节），M4 待开始。最后更新 2026-10-29。
+状态：M1–M4 已完成（见第 20–23 节）。最后更新 2026-10-29。
 
 ## 1. 目标与范围
 
@@ -542,3 +542,43 @@ LISTEN_CREDENTIAL_KEY=$(python -c "import os,base64;print(base64.b64encode(os.ur
 `/user/playlist` 的字段名（`listid`、`list_create_userid`、`is_pri`、`is_def`）、会员信息字段（`busi_vip.is_vip`）、
 失效错误码（20010/20018/51002），以及 QQ 音乐 `dir_show=0` 表示私密、网易云 `privacy=10` 表示私密，都是按文档和
 匿名接口的返回推断的，需要用真账号确认。
+
+## 23. M4 实现记录（2026-10-29）
+
+已完成：凛音知道本群正在一起听什么、发音乐卡片、按要求推荐歌（开着一起听就加进队列，否则发卡片）、查看队列和播放历史。
+
+代码：NoneBot 侧 `listen_plugin/recommend.py`（选歌和核对）、`listen_plugin/card.py`（卡片）、
+`tools_api_plugin/tools.py` 新增 `listen_context`、`listen_status`、`music_share`、`music_recommend` 四个工具；
+MaiBot 侧 `rinne_tools` 1.7.0 新增 `rinne_music_share`、`rinne_music_recommend`、`rinne_listen_status` 三个工具
+和 `maisaka.replyer.before_request` 钩子。
+
+和设计的差异、实现细节：
+
+- **群聊气氛由 MaiBot 带过去**（用户确认）：推荐时 `rinne_tools` 用 `message.get_recent` 取最近 20 条聊天，随请求发给
+  NoneBot，只在这一次选歌里用，不保存。原设计是 NoneBot 自己缓存，现在 NoneBot 不留群聊记录。需要的能力
+  `message.get_recent` 已加进 manifest。
+- **卡片格式**：NapCat 源码（`msg.ts`）里，不带 `id` 的 `music` 段就是自定义卡片，`type` 直接填平台
+  （`qq` / `163` / `kugou`），不是 `custom`。`url` 和 `image` 必填。
+- **没有 audio 时**（会员歌、bot 没配会员账号）签名服务返回图文卡片（`com.tencent.tuwen.lua`）：有标题、歌手、封面、
+  平台角标，点开跳到歌曲页，只是没有播放按钮。
+- **发歌选哪一份**：先认定是哪首歌（各平台结果里第一首原版，关键词写了 Live 等版本词时找那个版本），再在
+  “同一首”（歌名、歌手、时长对得上）里挑能放的。实测时发现如果只按“能放”挑，「晴天 周杰伦」会被换成别人翻唱的
+  《晴天(深情版)》，所以宁可发放不了的原曲卡片，也不换成翻唱。
+- **推荐核对**：LLM 每次多选一倍，搜索结果里歌名一致、歌手有交集、不是 Live/伴奏/翻唱（除非要求里写了）才算数；
+  编出来的歌名会被丢掉，并在下一轮告诉模型换别的；最多问 3 次，每次最多 5 首。不推本群最近放过的歌。
+- **加进队列时**点歌人记为「凛音」，房间聊天区显示“凛音给 xx 推荐了 …”。会员歌先换平台，换不到就不加。
+- **注入的上下文**只在白名单群、正在放歌时才有；查询超时 1 秒、缓存 10 秒，查不到就不注入。不改调用方传进来的参数，
+  返回新的 `modified_kwargs`。
+
+验证：
+
+- 测试 `tests/test_listen_rinne.py` 24 个；全量 235 通过、1 跳过（装上 maibot-plugin-sdk 后，
+  `tests/test_tools.py` 里以前跳过的 MaiBot 插件测试也都跑了）。
+- 真实接口：三首歌用 NapCat 默认签名服务（`106.55.0.102:10087`）按 NapCat 的请求格式签名都成功，免费歌是
+  带播放按钮的音乐卡片、音频能下载（206），会员歌是图文卡片；推荐核对把编造的歌名丢掉、真实的两首都找到了。
+
+**没验证**：
+
+- 卡片实际发进 QQ 群的样子（要在你的 bot 上看）。
+- 推荐用的大模型：本机 WebUI 没配 API Key，测试和实测都用了固定回复代替 LLM。部署后用的是 WebUI「大模型」分区的模型。
+- MaiBot 1.3 的 `message.get_recent` 返回的消息格式：按 SDK 文档和现有插件里的消息结构写的，取不到时推荐照常进行，只是少了气氛参考。

@@ -5,22 +5,32 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 from .auth import AuthError, CodeBook, Identity, LinkSigner, Sessions
 from .bridge import BotBridge, BotUnavailable, Member, MembershipCache
 from .hub import Hub
 from .library import Library
-from .sources.base import PLATFORM_NAMES, MusicSource, Stream, Track, VipCredential
+from .sources.base import (
+    PLATFORM_NAMES,
+    MusicSource,
+    SourceError,
+    Stream,
+    Track,
+    VipCredential,
+)
 from .sources.resolver import Sources
 from .store import Store
 from .sync import now_ms
 
 MAX_TRACK_CACHE = 5000
+_VERSION_WORDS = re.compile(r"live|伴奏|instrumental|karaoke|カラオケ|翻自|cover|dj|remix|0\.\d+x", re.IGNORECASE)
 
 
 @dataclass
@@ -250,3 +260,80 @@ class ListenService:
         if len(self._streams) > 2000:
             self._streams = {k: v for k, v in self._streams.items() if v.expires > now}
         return stream
+
+    # ------------------------------------------------------------ 凛音（M4）
+
+    def now_playing(self, group_id: str) -> dict[str, Any] | None:
+        """给凛音的回复上下文：本群正在放什么、接下来几首。没有房间或没在放歌返回 None。"""
+        room = self.hub.get(group_id)
+        if room is None or room.current is None:
+            return None
+        now = self.clock()
+        return {
+            "current": room.current.track.label(),
+            "added_by": room.current.added_by_name,
+            "position_ms": room.position_at(now),
+            "duration_ms": room.current.track.duration_ms,
+            "paused": room.anchor.paused,
+            "next": [item.track.label() for item in room.queue[:3]],
+            "listeners": self.hub.online(group_id),
+        }
+
+    def listen_status(self, group_id: str) -> dict[str, Any]:
+        """rinne_listen_status：完整队列和最近放过的歌。"""
+        room = self.hub.get(group_id)
+        if room is None:
+            return {"open": False}
+        return {
+            "open": True,
+            "now": self.now_playing(group_id),
+            "queue": [{"song": i.track.label(), "by": i.added_by_name} for i in room.queue[:30]],
+            "history": [t.label() for t in list(room.history)[-15:]][::-1],
+            "members": [m["name"] for m in self.hub.members(group_id)],
+        }
+
+    def played_recently(self, group_id: str) -> list[str]:
+        room = self.hub.get(group_id)
+        if room is None:
+            saved = self.store.load_room(group_id) or {}
+            return [f"{t.get('title')} - {t.get('artists')}" for t in saved.get("history") or []]
+        return [t.label() for t in room.history]
+
+    async def card_audio(self, track: Track) -> str:
+        """卡片里点播放时放的地址。网易云用官方外链（长期有效）；其他平台取现在的直链。取不到返回空，卡片照发。"""
+        if track.platform == "netease" and self.playable(track) and not track.vip:
+            return f"https://music.163.com/song/media/outer/url?id={track.id}.mp3"
+        try:
+            return (await self.stream(track, 320)).url
+        except SourceError:
+            return ""
+
+    async def resolve_song(self, keyword: str) -> Track | None:
+        """凛音发歌时按关键词找一首。
+
+        先认定“是哪首歌”：各平台搜索结果里排第一的原版（不是 Live / 伴奏 / 翻唱，除非关键词里写了）。
+        再找这首歌能放的那份：同一首（歌名、歌手、时长对得上）里优先能放的。
+        不会为了能放就换成别人翻唱的同名歌——宁可发一张放不了、但点开能跳到原曲的卡片。
+        """
+        from .sources.resolver import same_song
+
+        candidates: list[Track] = []
+        for platform in self.sources.platforms():
+            if not self.sources.available(platform):
+                continue
+            try:
+                candidates.extend(await self.search(keyword, platform, 5))
+            except SourceError:
+                continue
+        if not candidates:
+            return None
+        asked = _VERSION_WORDS.search(keyword)
+        if asked:
+            # 关键词里写了 Live、伴奏之类：要的就是那个版本
+            word = asked.group(0).lower()
+            preferred = [t for t in candidates if word in t.title.lower()]
+        else:
+            preferred = [t for t in candidates if not _VERSION_WORDS.search(t.title)]
+        target = (preferred or candidates)[0]
+        copies = [t for t in candidates if t == target or same_song(target, t)]
+        return next((t for t in copies if self.playable(t)), target)

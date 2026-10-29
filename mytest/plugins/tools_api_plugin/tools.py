@@ -235,7 +235,13 @@ def _is_superuser(user_id: str) -> bool:
 
 
 async def tool_tts(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    from ..tts_plugin.service import char_limit, is_ready, is_singing, spoken_length, synthesize
+    from ..tts_plugin.service import (
+        char_limit,
+        is_ready,
+        is_singing,
+        spoken_length,
+        synthesize,
+    )
 
     superuser = _is_superuser(ctx.user_id)
     limit = char_limit(superuser=superuser)
@@ -416,6 +422,183 @@ async def tool_qzone(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------- 一起听
+
+
+def _listen():
+    """一起听的服务；没启用时返回 None。插件在同一个目录里，启动时已经加载。"""
+    try:
+        from ..listen_plugin import service
+    except ImportError:
+        return None
+    return service
+
+
+def _listen_or_fail():
+    service = _listen()
+    if service is None:
+        raise ToolError("一起听没有开启")
+    return service
+
+
+def _fmt_ms(ms: int) -> str:
+    s = max(0, int(ms) // 1000)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def listen_context(group_id: str | None) -> str:
+    """给凛音回复前注入的一小段话：本群正在一起听什么。没有在听返回空字符串。"""
+    service = _listen()
+    if service is None or not group_id or not service.group_allowed(group_id):
+        return ""
+    now = service.now_playing(group_id)
+    if not now:
+        return ""
+    text = f"本群正在一起听：{now['current']}（{_fmt_ms(now['position_ms'])}/{_fmt_ms(now['duration_ms'])}"
+    text += "，暂停中" if now["paused"] else ""
+    text += f"，{now['added_by']}点的）" if now["added_by"] else "）"
+    if now["next"]:
+        text += "，接下来：" + "、".join(now["next"])
+    return text + f"。{now['listeners']} 人在听。"
+
+
+async def tool_listen_context(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return {"content": listen_context(ctx.group_id)}
+
+
+async def tool_listen_status(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    service = _listen_or_fail()
+    if not ctx.group_id or not service.group_allowed(ctx.group_id):
+        raise ToolError("这个群没有开一起听")
+    status = service.listen_status(ctx.group_id)
+    if not status["open"]:
+        return {"content": "本群现在没有一起听。想听的话在群里发 /一起听 开一个。"}
+    lines = []
+    now = status["now"]
+    if now:
+        lines.append(f"正在放：{now['current']}（{_fmt_ms(now['position_ms'])}/{_fmt_ms(now['duration_ms'])}"
+                     + ("，暂停中）" if now["paused"] else "）"))
+    else:
+        lines.append("现在没在放歌。")
+    if status["queue"]:
+        lines.append("接下来：" + "；".join(f"{q['song']}（{q['by']}点的）" for q in status["queue"]))
+    if status["history"]:
+        lines.append("刚放过：" + "；".join(status["history"]))
+    if status["members"]:
+        lines.append("在听的人：" + "、".join(status["members"]))
+    return {"content": "\n".join(lines) + "\n按对方问的简短回答，不要把整份列表念出来。"}
+
+
+async def _send_card(ctx: ToolContext, track: Any) -> None:
+    from ..listen_plugin.card import build_card
+
+    service = _listen_or_fail()
+    card = build_card(track, await service.card_audio(track))
+    try:
+        # NapCat：不带 id 的 music 段按自定义卡片签名，type 填平台决定角标（见 listen_plugin/card.py）
+        await send(ctx, Message(MessageSegment("music", card.segment_data())))
+    except Exception as e:  # noqa: BLE001 签名服务挂了、NapCat 不认：退回普通消息
+        logger.info("[凛音工具] 音乐卡片发送失败，改发文字：{}", e)
+        msg = Message(MessageSegment.text(card.fallback_text()))
+        if card.image:
+            msg = Message(MessageSegment.image(card.image)) + msg
+        await send(ctx, msg)
+
+
+async def tool_music_share(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """有人让凛音发某首歌：搜一首，发音乐卡片。所有群都能用。"""
+    service = _listen_or_fail()
+    keyword = _text(args, "song", limit=80)
+    if not keyword:
+        raise ToolError("缺少歌名")
+    track = await service.resolve_song(keyword)
+    if track is None:
+        raise ToolError(f"三个平台都没搜到「{keyword}」")
+
+    async def job():
+        try:
+            await _send_card(ctx, track)
+        except Exception as e:
+            logger.opt(exception=e).warning("[凛音工具] music_share 失败")
+            await send(ctx, f"歌没发出去……{describe_exception('音乐', e)}")
+
+    _spawn("music_share", job())
+    return {"content": f"找到了「{track.label()}」，卡片马上发出去。用你自己的口吻简短说一句，不要再报歌名。"}
+
+
+async def tool_music_recommend(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """有人让凛音推荐歌：按要求选歌、核对存在。白名单群开着一起听时加进队列，否则发卡片。"""
+    from ..listen_plugin.recommend import RecommendRequest, recommend
+
+    service = _listen_or_fail()
+    want = _text(args, "want", limit=200)
+    count = _int(args, "count", default=1, low=1, high=5)
+    chat = [str(line)[:200] for line in (args.get("recent_chat") or []) if isinstance(line, str)][-20:]
+    in_room = bool(ctx.group_id and service.group_allowed(ctx.group_id) and service.hub.get(ctx.group_id))
+    taste = service.library.summary_for_recommend(ctx.user_id) if service.library else []
+    played = service.played_recently(ctx.group_id) if ctx.group_id else []
+    req = RecommendRequest(want=want, count=count, chat=chat, played=played, taste=taste)
+    try:
+        tracks = await recommend(req, service.sources, playable=service.playable)
+    except Exception as e:
+        raise ToolError(f"选歌失败：{describe_exception('推荐', e)}") from None
+    if not tracks:
+        raise ToolError("想了几首都没在平台上找到，换个说法再试")
+    service.remember(tracks)
+    names = "、".join(t.label() for t in tracks)
+
+    if in_room:
+        added, skipped = [], []
+        for track in tracks:
+            if not service.playable(track):
+                replacement = await service.substitute(track)
+                if replacement is None:
+                    skipped.append(track.label())
+                    continue
+                track = replacement
+            if await _add_to_room(service, ctx, track):
+                added.append(track.label())
+        if not added:
+            raise ToolError(f"选了{names}，但都是会员歌，放不了")
+        note = "（" + "、".join(skipped) + " 是会员歌放不了，没加）" if skipped else ""
+        return {"content": f"已经把 {'、'.join(added)} 加进本群一起听的队列了{note}。"
+                           "用你自己的口吻简短介绍一下为什么选这首，不要发链接。"}
+
+    async def job():
+        for track in tracks:
+            try:
+                await _send_card(ctx, track)
+            except Exception as e:
+                logger.opt(exception=e).warning("[凛音工具] music_recommend 发卡片失败")
+    _spawn("music_recommend", job())
+    return {"content": f"选好了：{names}，卡片马上发出去。用你自己的口吻简短介绍一下为什么选，不要再报一遍歌名。"}
+
+
+async def _add_to_room(service: Any, ctx: ToolContext, track: Any) -> bool:
+    from ..listen_plugin.room import RoomError
+
+    room = service.hub.get(ctx.group_id)
+    if room is None:
+        return False
+    name = "凛音"
+    try:
+        room.add(track, "rinne", name)
+        if room.current is None:
+            room.next("rinne", service.clock(), superuser=True)
+            await service.hub.push_state(ctx.group_id)
+    except RoomError as e:
+        logger.info("[凛音工具] 加进队列失败：{}", e)
+        return False
+    service.hub.save(ctx.group_id)
+    await service.hub.push_queue(ctx.group_id)
+    who = ctx.user_name or ctx.user_id
+    await service.hub.broadcast(ctx.group_id, {
+        "type": "chat", "system": True, "ts": service.clock(),
+        "text": f"凛音给{who}推荐了 {track.label()}，加进队列了",
+    })
+    return True
+
+
 # ---------------------------------------------------------------- 注册表
 
 
@@ -471,6 +654,20 @@ TOOLS: dict[str, ToolSpec] = {
                 "check_only": {"type": "boolean"},
             },
             tool_qzone,
+        ),
+        ToolSpec("listen_context", "本群正在一起听什么（回复前注入用）", {}, tool_listen_context),
+        ToolSpec("listen_status", "本群一起听的队列和刚放过的歌", {}, tool_listen_status),
+        ToolSpec("music_share", "发一首歌的音乐卡片", {"song": {"type": "string", "required": True}},
+                 tool_music_share),
+        ToolSpec(
+            "music_recommend",
+            "按要求推荐歌",
+            {
+                "want": {"type": "string"},
+                "count": {"type": "integer"},
+                "recent_chat": {"type": "array"},
+            },
+            tool_music_recommend,
         ),
     )
 }
