@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
+import logging
 import secrets
 import time
 from collections import deque
@@ -37,6 +39,25 @@ BROWSER_COOKIE = "listen_browser"
 MAX_WS_MESSAGE = 4096
 WS_RATE = 5  # 每个连接每秒最多几条消息
 MAX_CHAT = 200
+
+# 服务端心跳：每 25 秒 ping 一次，90 秒没回应才算断开。手机切后台、跨境线路卡顿时不会被误断；
+# 25 秒也远小于 Cloudflare 的 100 秒空闲超时。
+WS_PING_INTERVAL = 25.0
+WS_PING_TIMEOUT = 90.0
+
+CLOSE_NAMES = {
+    1000: "正常关闭",
+    1001: "离开页面",
+    1005: "没有关闭码",
+    1006: "连接中断（网络断了或心跳超时）",
+    1011: "服务端出错",
+    1012: "服务器重启",
+    4000: "房间关闭",
+    4003: "被移出",
+}
+
+# 这里不 import nonebot，用标准 logging；插件入口把它接到 NoneBot 的日志里。
+log = logging.getLogger("listen_plugin.app")
 
 def security_headers_for(origin: str) -> dict[str, str]:
     ws_origin = origin.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
@@ -461,13 +482,19 @@ def create_app(service: ListenService) -> FastAPI:
             async with lock:
                 await socket.send_json(message)
 
+        closed_by_server: list[int] = []
+
         async def close(code: int, reason: str) -> None:
+            closed_by_server.append(code)
             await socket.close(code, reason)
 
         conn = Connection(member=member, superuser=superuser, send=send, close=close)
         service.hub.join(group_id, conn)
         hits: deque[float] = deque()
         throttled = False
+        started = time.monotonic()
+        close_code: int | None = None
+        log.info("[一起听] %s 连上了（群 %s，IP %s）", identity.qq, group_id, ip_of(socket))
         try:
             now = service.clock()
             await send({"type": "hello", "qq": identity.qq, "name": member.name, "superuser": superuser})
@@ -491,12 +518,34 @@ def create_app(service: ListenService) -> FastAPI:
                 except (ValueError, ValidationError):
                     await send({"type": "error", "message": "消息格式不对"})
                     continue
-                await handle(group_id, conn, msg)
-        except WebSocketDisconnect:
-            pass
+                try:
+                    await handle(group_id, conn, msg)
+                except (WebSocketDisconnect, asyncio.CancelledError):
+                    raise
+                except Exception:
+                    # 一条消息处理出错不该断开整个连接：记日志，告诉这个人，接着收下一条。
+                    log.exception("[一起听] 处理 %s 的 %s 消息出错", identity.qq, getattr(msg, "type", "?"))
+                    with contextlib.suppress(Exception):
+                        await send({"type": "error", "message": "出错了，稍后再试"})
+        except WebSocketDisconnect as e:
+            close_code = e.code
+        except Exception:
+            # 服务端主动关的（房间关闭、被踢）之后再收消息会报错，不算异常。
+            if not closed_by_server:
+                log.exception("[一起听] %s 的连接出错", identity.qq)
+                close_code = 1011
         finally:
+            if closed_by_server:
+                close_code = closed_by_server[0]
             service.hub.leave(group_id, conn)
-            await service.hub.broadcast(group_id, {"type": "members", "members": service.hub.members(group_id)})
+            log.info(
+                "[一起听] %s 断开了：%s %s%s，连了 %s",
+                identity.qq, close_code, CLOSE_NAMES.get(close_code or 0, ""),
+                "（服务端关闭）" if closed_by_server else "",
+                fmt_duration(time.monotonic() - started),
+            )
+            with contextlib.suppress(Exception):
+                await service.hub.broadcast(group_id, {"type": "members", "members": service.hub.members(group_id)})
 
     async def system_chat(group_id: str, text: str) -> None:
         await service.hub.broadcast(
@@ -585,6 +634,15 @@ def create_app(service: ListenService) -> FastAPI:
 def fmt_time(ms: int) -> str:
     s = max(0, ms // 1000)
     return f"{s // 60}:{s % 60:02d}"
+
+
+def fmt_duration(seconds: float) -> str:
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s} 秒"
+    if s < 3600:
+        return f"{s // 60} 分 {s % 60} 秒"
+    return f"{s // 3600} 小时 {s % 3600 // 60} 分"
 
 
 _avatars: dict[str, tuple[float, bytes]] = {}

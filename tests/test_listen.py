@@ -526,3 +526,33 @@ def test_websocket_flow(env):
         asyncio.run(service.member_left(GROUP, "2"))
         assert until(ws, "closed")["message"]
     assert client.get("/api/me").status_code == 401, "session revoked after leaving the group"
+
+
+def test_websocket_survives_handler_error(env, monkeypatch, caplog):
+    service, _, client, _ = env
+    login(client, service, "2")
+    service.hub.open(GROUP, "1")
+
+    def boom(_ref):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "known_track", boom)
+    caplog.set_level("INFO", logger="listen_plugin.app")
+    with client.websocket_connect("/ws", headers=ws_headers(client)) as ws:
+        for _ in range(3):
+            ws.receive_json()  # hello、state、queue
+        time.sleep(0.21)
+        ws.send_json({"type": "queue", "op": "add", "ref": "qq:x"})
+        msg = ws.receive_json()
+        while msg["type"] != "error":
+            msg = ws.receive_json()
+        assert msg["message"] == "出错了，稍后再试"
+        time.sleep(0.21)
+        ws.send_json({"type": "ping", "client_ms": 7})
+        msg = ws.receive_json()
+        while msg["type"] != "pong":
+            msg = ws.receive_json()
+        assert msg["client_ms"] == 7, "connection still works after the error"
+    text = caplog.text
+    assert "处理 2 的 queue 消息出错" in text and "boom" in text
+    assert "2 连上了" in text and "2 断开了" in text

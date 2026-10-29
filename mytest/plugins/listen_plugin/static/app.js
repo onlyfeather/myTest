@@ -13,7 +13,8 @@ const s = reactive({
   code: '', codeExpires: 0, codeError: '',
   me: null,
   state: null, queue: [], members: [], chat: [],
-  connected: false, unlocked: false,
+  // unlocked：浏览器允许出声。进来先直接试着播，被浏览器拦下才变成 false，点页面任意位置恢复。
+  connected: false, closeInfo: '', unlocked: true,
   tick: 0, dragging: false, dragValue: 0,
   q: '', results: [], searching: false, searchError: '', vipReady: false,
   platforms: [], platform: 'qq',
@@ -83,6 +84,7 @@ async function boot() {
   s.notice = ''; // 已经登录了，链接失效的提示没有意义
   loadPlatforms();
   loadLiked();
+  armGestureUnlock();
   connect();
 }
 
@@ -211,7 +213,12 @@ function syncAudio() {
   if (duration && expected >= duration) return; // 等服务端切下一首
   if (audio.paused) {
     audio.currentTime = expected / 1000;
-    audio.play().catch((e) => { if (e.name === 'NotAllowedError') s.unlocked = false; });
+    audio.play().catch((e) => {
+      if (e.name !== 'NotAllowedError') return;
+      armGestureUnlock();
+      // 在后台被拒绝时不显示「开始收听」，回到页面后会再试。
+      if (!document.hidden) s.unlocked = false;
+    });
     return;
   }
   const drift = local - expected;
@@ -222,6 +229,8 @@ function syncAudio() {
 }
 
 audio.addEventListener('loadedmetadata', syncAudio);
+// 在后台时连接可能已经断了：一首放完就马上重连，拿到服务端切好的下一首。
+audio.addEventListener('ended', () => reconnectNow());
 audio.addEventListener('error', () => {
   // 地址过期或者网络问题：重新取地址，最多 3 次。
   if (!loadedRef || retries >= 3) return;
@@ -234,7 +243,7 @@ audio.addEventListener('error', () => {
   }, 1000 * retries);
 });
 
-// 一段很短的静音，点「开始收听」时在用户手势里播一下，解锁 iOS 上的 <audio>。
+// 一段很短的静音，在用户操作里播一下，解锁 iOS 上的 <audio>。
 function silentWav() {
   const n = 800;
   const buf = new ArrayBuffer(44 + n);
@@ -248,7 +257,44 @@ function silentWav() {
   return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 
+// 浏览器不允许没有用户操作就出声（自动播放限制，网页绕不过去）。被拦下时，在页面上点任意一下就开始播，
+// 不用找按钮。进来时也先挂上：第一次点击顺便在用户操作里解锁 <audio>（iOS 需要），之后切歌不用再点。
+// 触摸只有 touchend / pointerup 算用户操作，pointerdown 不算。
+const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
+let gestureArmed = false;
+
+function onGesture() {
+  disarmGestureUnlock();
+  if (localPaused || !audio.paused) return; // 自己在锁屏上暂停过，或者已经在放
+  const st = s.state;
+  if (st && st.current && !st.paused) { unlock(); return; }
+  // 现在没在放歌：静音播一下再停，只为解锁，下一首开始时就能直接出声。
+  audio.muted = true;
+  const restore = () => { audio.pause(); audio.muted = false; };
+  if (!audio.src) {
+    audio.src = silentWav();
+    audio.play().catch(() => {}).finally(() => {
+      restore();
+      if (audio.src.startsWith('blob:')) { audio.removeAttribute('src'); loadedRef = null; applyState(); }
+    });
+  } else {
+    audio.play().catch(() => {}).finally(restore);
+  }
+}
+
+function armGestureUnlock() {
+  if (gestureArmed) return;
+  gestureArmed = true;
+  for (const t of GESTURES) document.addEventListener(t, onGesture, { capture: true, passive: true });
+}
+
+function disarmGestureUnlock() {
+  gestureArmed = false;
+  for (const t of GESTURES) document.removeEventListener(t, onGesture, { capture: true });
+}
+
 async function unlock() {
+  disarmGestureUnlock();
   s.unlocked = true;
   localPaused = false;
   if (!audio.src) {
@@ -291,6 +337,16 @@ let reconnectDelay = 1000;
 let reconnectTimer = 0;
 let pingTimer = 0;
 
+const CLOSE_NAMES = {
+  1000: '正常关闭',
+  1001: '服务器或代理断开',
+  1005: '没有关闭码',
+  1006: '网络中断',
+  1011: '服务端出错或心跳超时',
+  1012: '服务器重启',
+  4503: '凛音暂时不在线',
+};
+
 function send(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
@@ -299,25 +355,45 @@ function connect() {
   s.view = 'main';
   clearTimeout(reconnectTimer);
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => {
+  const sock = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = sock;
+  sock.onopen = () => {
     s.connected = true;
+    s.closeInfo = '';
     reconnectDelay = 1000;
     calibrate();
     clearInterval(pingTimer);
     pingTimer = setInterval(ping, 30000);
   };
-  ws.onmessage = (e) => {
+  sock.onmessage = (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
     onMessage(msg);
   };
-  ws.onclose = (e) => {
+  sock.onclose = (e) => {
+    if (sock !== ws) return; // 已经换了新连接
     s.connected = false;
+    s.closeInfo = `${e.code}${CLOSE_NAMES[e.code] ? ' ' + CLOSE_NAMES[e.code] : ''}`;
     clearInterval(pingTimer);
     onClose(e.code);
   };
 }
+
+function reconnectNow() {
+  if (s.view !== 'main') return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  reconnectDelay = 1000;
+  connect();
+}
+
+// 手机切回页面、网络恢复时马上重连，不等退避计时器（后台时计时器可能被推迟）。
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (ws && ws.readyState === WebSocket.OPEN) calibrate();
+  else reconnectNow();
+  syncAudio();
+});
+window.addEventListener('online', reconnectNow);
 
 let closedMessage = '';
 
@@ -651,7 +727,7 @@ const App = {
       pickLibPlatform(id) { s.libPlatform = id; s.importList = null; s.libError = ''; s.uid = ''; cancelQr(); },
       when(ms) { if (!ms) return ''; const d = new Date(ms); return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; },
       platformName(id) { const p = s.platforms.find((x) => x.id === id); return p ? p.name : id; },
-      boot, startCode, logout, unlock, control, search, addTrack, sendChat,
+      boot, startCode, logout, unlock, control, search, addTrack, sendChat, reconnectNow,
       resume() { localPaused = false; control('play'); },
       seekInput(e) { s.dragging = true; s.dragValue = Number(e.target.value); },
       seekCommit(e) { s.dragging = false; control('seek', { position_ms: Number(e.target.value) }); },
@@ -686,7 +762,10 @@ const App = {
 </div>
 
 <template v-else>
-  <div class="banner" v-if="!s.connected">连接断开，正在重连…</div>
+  <div class="banner" v-if="!s.connected">
+    连接断开<template v-if="s.closeInfo">（{{ s.closeInfo }}）</template>，正在重连…
+    <button class="icon" @click="reconnectNow()">马上重连</button>
+  </div>
   <div class="layout">
     <section class="panel a-search" :class="{ active: s.tab === 'search' }">
       <header>点歌</header>
@@ -747,7 +826,7 @@ const App = {
         <div class="row muted small"><span>{{ fmt(position) }}</span><span class="grow"></span><span>{{ fmt(track.duration_ms) }}</span></div>
       </div>
       <div class="controls">
-        <button v-if="!s.unlocked && track" class="primary" @click="unlock()">开始收听</button>
+        <button v-if="!s.unlocked && track" class="primary" @click="unlock()">浏览器拦下了自动播放，点一下页面就开始</button>
         <template v-else>
           <button v-if="!s.state || s.state.paused" :disabled="!canControl || (!track && !s.queue.length)" @click="resume()">播放</button>
           <button v-else :disabled="!canControl" @click="control('pause')">暂停</button>

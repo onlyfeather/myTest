@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from pathlib import Path
 
 from nonebot import get_bot, get_driver, logger, on_notice, on_regex, require
+from nonebot.log import LoguruHandler
 
 require("nonebot_plugin_localstore")
 
@@ -210,7 +212,14 @@ async def _start() -> None:
     host, port = deployment.host, deployment.port
     import uvicorn
 
-    from .app import create_app
+    from .app import WS_PING_INTERVAL, WS_PING_TIMEOUT, create_app
+
+    # app.py 不 import nonebot，用标准 logging；这里把它接到 NoneBot 的日志里（连上、断开、出错）。
+    app_log = logging.getLogger("listen_plugin.app")
+    if not any(isinstance(h, LoguruHandler) for h in app_log.handlers):
+        app_log.addHandler(LoguruHandler())
+    app_log.setLevel(logging.INFO)
+    app_log.propagate = False
 
     config = uvicorn.Config(
         create_app(service),
@@ -220,6 +229,8 @@ async def _start() -> None:
         access_log=False,
         proxy_headers=False,  # 真实 IP 由 app.client_ip 按 LISTEN_TRUSTED_PROXIES 判断
         ws_max_size=64 * 1024,
+        ws_ping_interval=WS_PING_INTERVAL,
+        ws_ping_timeout=WS_PING_TIMEOUT,
         lifespan="off",
     )
     server = uvicorn.Server(config)
