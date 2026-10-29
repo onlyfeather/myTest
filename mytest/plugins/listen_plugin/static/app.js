@@ -1,6 +1,6 @@
 // 一起听前端。Vue 3（本地 ESM 构建，不用构建工具）。
 // 用户内容（歌名、昵称、聊天）一律用 {{ }} 文本插值，不用 v-html。
-import { createApp, reactive, computed } from '/static/vendor/vue.esm-browser.prod.js';
+import { createApp, reactive, computed, watch, nextTick } from '/static/vendor/vue.esm-browser.prod.js';
 
 // 纠偏阈值，和 sync.py 保持一致。
 const IGNORE_MS = 300;
@@ -16,6 +16,9 @@ const s = reactive({
   connected: false, unlocked: false,
   tick: 0, dragging: false, dragValue: 0,
   q: '', results: [], searching: false, searchError: '', vipReady: false,
+  platforms: [], platform: 'qq',
+  lyrics: [], lyricsState: '', showLyrics: false,
+  profile: null,
   chatText: '', toast: '', tab: 'now',
 });
 
@@ -75,6 +78,7 @@ async function boot() {
   if (!me.ok) return showMessage(me.message || '出错了', '', true);
   s.me = me;
   s.notice = ''; // 已经登录了，链接失效的提示没有意义
+  loadPlatforms();
   connect();
 }
 
@@ -84,22 +88,26 @@ async function startCode(renew = false) {
   clearTimeout(codeTimer);
   const r = await api('/api/login/code', { method: 'POST', body: { renew } });
   if (r.done) return boot();
+  showCode(r);
+  codeTimer = setTimeout(pollCode, 2000);
+}
+
+function showCode(r) {
   if (r.code) {
     s.code = r.code;
-    s.codeExpires = Date.now() + 5 * 60 * 1000;
+    s.codeExpires = Date.now() + (r.expires_in_ms || 0);
     s.codeError = '';
   } else if (!r.ok) {
     s.codeError = r.message || '拿不到验证码';
   }
-  codeTimer = setTimeout(pollCode, 2000);
 }
 
 async function pollCode() {
   if (s.view !== 'code') return;
-  if (Date.now() > s.codeExpires) return startCode(true);
+  // 码过期后服务端会自动发新的，这里不用主动要。
   const r = await api('/api/login/code', { method: 'POST', body: {} });
   if (r.done) return boot();
-  if (r.code) s.code = r.code;
+  showCode(r);
   codeTimer = setTimeout(pollCode, 2000);
 }
 
@@ -179,6 +187,7 @@ async function applyState() {
     await loadTrack(track);
   }
   updateMediaSession(track);
+  loadLyrics(track);
   syncAudio();
 }
 
@@ -353,22 +362,99 @@ function control(action, extra = {}) {
   send({ type: 'control', action, version: s.state ? s.state.version : null, ...extra });
 }
 
+async function loadPlatforms() {
+  const r = await api('/api/platforms');
+  if (!r.ok) return;
+  s.platforms = r.platforms;
+  if (!s.platforms.some((p) => p.id === s.platform)) s.platform = (s.platforms[0] || {}).id || 'qq';
+}
+
+let searchSeq = 0;
 async function search() {
   const q = s.q.trim();
   if (!q) return;
+  const seq = ++searchSeq;
   s.searching = true;
   s.searchError = '';
-  const r = await api('/api/search?platform=qq&q=' + encodeURIComponent(q));
+  const r = await api(`/api/search?platform=${encodeURIComponent(s.platform)}&q=${encodeURIComponent(q)}`);
+  if (seq !== searchSeq) return; // 切了平台或者又搜了一次
   s.searching = false;
-  if (!r.ok) { s.searchError = r.message || '搜索失败'; return; }
+  if (!r.ok) { s.results = []; s.searchError = r.message || '搜索失败'; return; }
   s.results = r.tracks;
   s.vipReady = !!r.vip_ready;
   if (!r.tracks.length) s.searchError = '没搜到';
 }
 
+function pickPlatform(id) {
+  if (s.platform === id) return;
+  s.platform = id;
+  s.results = [];
+  if (s.q.trim()) search();
+}
+
 function addTrack(track) {
   send({ type: 'queue', op: 'add', ref: track.ref });
-  toast(`点了 ${track.title}`);
+  toast(track.vip && !s.vipReady ? `在别的平台找《${track.title}》…` : `点了 ${track.title}`);
+}
+
+// ---------------------------------------------------------------- 歌词
+
+// 解析 LRC：[mm:ss.xx] 文本，一行可以有多个时间标签。翻译按时间对上原文。
+function parseLrc(text) {
+  const lines = [];
+  for (const raw of (text || '').split(/\r?\n/)) {
+    const tags = [...raw.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)];
+    if (!tags.length) continue;
+    const content = raw.replace(/\[[^\]]*\]/g, '').trim();
+    for (const t of tags) {
+      const frac = t[3] ? Number(t[3].padEnd(3, '0')) : 0;
+      lines.push({ t: Number(t[1]) * 60000 + Number(t[2]) * 1000 + frac, text: content });
+    }
+  }
+  return lines.sort((a, b) => a.t - b.t);
+}
+
+function mergeLyrics(lrc, trans) {
+  const main = parseLrc(lrc).filter((l) => l.text);
+  const tr = new Map(parseLrc(trans).filter((l) => l.text).map((l) => [l.t, l.text]));
+  return main.map((l) => ({ ...l, trans: tr.get(l.t) || '' }));
+}
+
+let lyricsRef = null;
+async function loadLyrics(track) {
+  const ref = track ? track.ref : null;
+  if (ref === lyricsRef) return;
+  lyricsRef = ref;
+  s.lyrics = [];
+  s.lyricsState = ref ? 'loading' : '';
+  if (!ref) return;
+  const r = await api('/api/lyrics?ref=' + encodeURIComponent(ref));
+  if (lyricsRef !== ref) return;
+  if (!r.ok) { s.lyricsState = 'error'; return; }
+  s.lyrics = mergeLyrics(r.lrc, r.trans);
+  s.lyricsState = s.lyrics.length ? 'ok' : 'none';
+}
+
+let lastLyricIndex = -1;
+function scrollLyric(index) {
+  if (index === lastLyricIndex) return;
+  lastLyricIndex = index;
+  const box = document.querySelector('.lyrics');
+  const el = box && box.querySelector(`[data-i="${index}"]`);
+  // offsetTop 是相对最近的定位祖先算的，不一定是 .lyrics；用两者的位置差算才准。
+  if (el) {
+    const offset = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    box.scrollTo({ top: offset - box.clientHeight / 2 + el.offsetHeight / 2, behavior: 'smooth' });
+  }
+}
+
+// ---------------------------------------------------------------- 资料卡
+
+async function openProfile(qq) {
+  s.profile = { qq, loading: true };
+  const r = await api('/api/members/' + encodeURIComponent(qq));
+  if (!s.profile || s.profile.qq !== qq) return;
+  s.profile = r.ok ? r : { qq, error: r.message || '打不开资料卡' };
 }
 
 function sendChat() {
@@ -405,9 +491,24 @@ const App = {
     const isOwner = computed(() => !!(s.state && s.me && (s.me.qq === s.state.owner || s.me.superuser)));
     const codeLeft = computed(() => { void s.tick; return Math.max(0, s.codeExpires - Date.now()); });
     const mine = (item) => s.me && item.added_by === s.me.qq;
+    const lyricIndex = computed(() => {
+      const p = position.value;
+      let lo = 0; let hi = s.lyrics.length - 1; let found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (s.lyrics[mid].t <= p + 200) { found = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+      return found;
+    });
+    const currentLine = computed(() => (lyricIndex.value >= 0 ? s.lyrics[lyricIndex.value].text : ''));
+    // flush: 'post'：等 Vue 把新的 .on 渲染到 DOM 之后再量位置。
+    watch(lyricIndex, (i) => { if (s.showLyrics) scrollLyric(i); }, { flush: 'post' });
+    watch(() => s.showLyrics, (on) => { if (on) { lastLyricIndex = -1; nextTick(() => scrollLyric(lyricIndex.value)); } });
 
     return {
       s, track, position, canControl, isOwner, codeLeft, fmt, mine,
+      lyricIndex, currentLine, openProfile, pickPlatform,
+      platformName(id) { const p = s.platforms.find((x) => x.id === id); return p ? p.name : id; },
       boot, startCode, logout, unlock, control, search, addTrack, sendChat,
       resume() { localPaused = false; control('play'); },
       seekInput(e) { s.dragging = true; s.dragValue = Number(e.target.value); },
@@ -448,6 +549,10 @@ const App = {
     <section class="panel a-search" :class="{ active: s.tab === 'search' }">
       <header>点歌</header>
       <div class="body">
+        <div class="seg" v-if="s.platforms.length > 1">
+          <button v-for="p in s.platforms" :key="p.id" :class="{ on: s.platform === p.id }"
+                  :disabled="!p.available" :title="p.available ? '' : '暂时不可用'" @click="pickPlatform(p.id)">{{ p.name }}</button>
+        </div>
         <form class="row" @submit.prevent="search()">
           <input v-model="s.q" placeholder="歌名、歌手" maxlength="60" enterkeyhint="search">
           <button class="primary" :disabled="s.searching">搜索</button>
@@ -461,20 +566,34 @@ const App = {
               <div class="ellipsis">{{ t.title }} <span class="tag vip" v-if="t.vip">会员</span></div>
               <div class="muted small ellipsis">{{ t.artists }} · {{ fmt(t.duration_ms) }}</div>
             </div>
-            <button class="icon" :disabled="t.vip && !s.vipReady" @click="addTrack(t)"
-                    :title="t.vip && !s.vipReady ? '会员歌，还没配置会员账号' : '点歌'">＋</button>
+            <button class="icon" @click="addTrack(t)"
+                    :title="t.vip && !s.vipReady ? '会员歌：会到别的平台找同一首' : '点歌'">＋</button>
           </li>
         </ul>
       </div>
     </section>
 
     <section class="panel now a-now" :class="{ active: s.tab === 'now' }">
-      <img v-if="track && track.cover" class="cover" :src="track.cover" alt="">
-      <div v-else class="cover empty">{{ track ? '没有封面' : '还没有在放歌' }}</div>
+      <div class="stage" @click="track && (s.showLyrics = !s.showLyrics)" :title="track ? '点一下切换封面和歌词' : ''">
+        <div v-if="track && s.showLyrics" class="lyrics">
+          <p class="muted" v-if="s.lyricsState === 'loading'">歌词加载中…</p>
+          <p class="muted" v-else-if="s.lyricsState === 'none'">这首没有歌词</p>
+          <p class="muted" v-else-if="s.lyricsState === 'error'">歌词获取失败</p>
+          <div v-for="(l, i) in s.lyrics" :key="i" :data-i="i" class="line" :class="{ on: i === lyricIndex }">
+            <div>{{ l.text }}</div><div class="trans" v-if="l.trans">{{ l.trans }}</div>
+          </div>
+        </div>
+        <img v-else-if="track && track.cover" class="cover" :src="track.cover" alt="">
+        <div v-else class="cover empty">{{ track ? '没有封面' : '还没有在放歌' }}</div>
+      </div>
       <div v-if="track">
         <div class="title">{{ track.title }}</div>
         <div class="muted">{{ track.artists }}<span v-if="track.album"> · {{ track.album }}</span></div>
-        <div class="muted small" v-if="s.state.current.added_by_name">{{ s.state.current.added_by_name }} 点的</div>
+        <div class="muted small">
+          <span class="tag">{{ platformName(track.platform) }}</span>
+          <template v-if="s.state.current.added_by_name"> · <a class="link" @click="openProfile(s.state.current.added_by)">{{ s.state.current.added_by_name }}</a> 点的</template>
+        </div>
+        <div class="muted small current-line" v-if="!s.showLyrics && currentLine">{{ currentLine }}</div>
       </div>
       <div class="progress" v-if="track">
         <input type="range" min="0" :max="track.duration_ms || 1" step="1000" :value="position"
@@ -504,7 +623,7 @@ const App = {
             <img class="thumb" v-if="item.track.cover" :src="item.track.cover" loading="lazy" alt="">
             <div class="grow">
               <div class="ellipsis">{{ item.track.title }}</div>
-              <div class="muted small ellipsis">{{ item.track.artists }} · {{ item.added_by_name }} 点的</div>
+              <div class="muted small ellipsis">{{ item.track.artists }} · {{ platformName(item.track.platform) }} · {{ item.added_by_name }} 点的</div>
             </div>
             <button class="icon" v-if="canControl && i > 0" @click="moveUp(item, i)" title="往前挪">↑</button>
             <button class="icon" v-if="canControl || mine(item)" @click="remove(item)" title="删掉">✕</button>
@@ -521,15 +640,15 @@ const App = {
       </header>
       <div class="body members">
         <div class="row wrap">
-          <span class="row small" v-for="m in s.members" :key="m.qq" :title="m.title">
+          <button class="member" v-for="m in s.members" :key="m.qq" :title="m.title" @click="openProfile(m.qq)">
             <img class="avatar" :src="avatar(m.qq)" loading="lazy" alt="">{{ m.name }}
-          </span>
+          </button>
         </div>
       </div>
       <div class="body chat chat-scroll">
         <div v-for="(c, i) in s.chat" :key="i" class="msg" :class="{ system: c.system }">
           <template v-if="c.system">{{ c.text }}</template>
-          <template v-else><span class="who">{{ c.name }}</span>{{ c.text }}</template>
+          <template v-else><a class="who" @click="openProfile(c.from)">{{ c.name }}</a>{{ c.text }}</template>
         </div>
       </div>
       <form class="chat-input row" @submit.prevent="sendChat()">
@@ -552,6 +671,30 @@ const App = {
     <button :class="{ on: s.tab === 'chat' }" @click="s.tab = 'chat'">聊天</button>
   </nav>
 </template>
+
+<div class="modal" v-if="s.profile" @click.self="s.profile = null">
+  <div class="card profile">
+    <button class="icon close" @click="s.profile = null" title="关闭">✕</button>
+    <img class="avatar big" :src="avatar(s.profile.qq)" alt="">
+    <p class="muted" v-if="s.profile.loading">加载中…</p>
+    <p class="error" v-else-if="s.profile.error">{{ s.profile.error }}</p>
+    <template v-else>
+      <h2>{{ s.profile.name }}</h2>
+      <div class="muted small" v-if="s.profile.card && s.profile.nickname && s.profile.card !== s.profile.nickname">{{ s.profile.nickname }}</div>
+      <div class="row center-row">
+        <span class="tag" v-if="s.profile.role === 'owner'">群主</span>
+        <span class="tag" v-else-if="s.profile.role === 'admin'">管理员</span>
+        <span class="tag" v-if="s.profile.title">{{ s.profile.title }}</span>
+        <span class="tag" v-if="s.profile.group_level">群等级 {{ s.profile.group_level }}</span>
+        <span class="tag" v-if="s.profile.qq_level">QQ 等级 {{ s.profile.qq_level }}</span>
+      </div>
+      <p class="signature" v-if="s.profile.signature">{{ s.profile.signature }}</p>
+      <p class="muted small">
+        {{ s.profile.online ? '正在一起听' : '不在房间里' }}<span v-if="s.profile.playing_theirs"> · 现在放的是 TA 点的</span><span v-if="s.profile.in_queue"> · 接下来还有 {{ s.profile.in_queue }} 首</span>
+      </p>
+    </template>
+  </div>
+</div>
 
 <div class="toast" v-if="s.toast">{{ s.toast }}</div>
 `,

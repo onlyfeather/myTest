@@ -6,6 +6,8 @@
     LISTEN_HOST=127.0.0.1                          # Docker 里改成 0.0.0.0，并且只映射到宿主机本地
     LISTEN_PORT=8090
     LISTEN_TRUSTED_PROXIES=127.0.0.1,::1           # 只采信这些地址传来的 X-Forwarded-For
+    NETEASE_API_URL=http://netease-api:3000        # 可选，api-enhanced；不填就不接网易云
+    KUGOU_API_URL=http://kugou-api:3000            # 可选，KuGouMusicApi；不填就不接酷狗
 """
 
 from __future__ import annotations
@@ -83,6 +85,8 @@ class Deployment:
     public_url: str
     secret: str
     trusted_proxies: tuple[str, ...]
+    netease_api: str = ""
+    kugou_api: str = ""
 
 
 def load_deployment() -> tuple[Deployment | None, str]:
@@ -107,4 +111,11 @@ def load_deployment() -> tuple[Deployment | None, str]:
         public_url=f"{parts.scheme}://{parts.netloc}",
         secret=secret,
         trusted_proxies=proxies,
+        netease_api=_api_url("netease_api_url"),
+        kugou_api=_api_url("kugou_api_url"),
     ), ""
+
+
+def _api_url(name: str) -> str:
+    value = _env(name).rstrip("/")
+    return value if urlsplit(value).scheme in ("http", "https") else ""

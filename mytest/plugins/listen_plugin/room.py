@@ -155,6 +155,13 @@ class Room:
         self._check_control(qq, now, superuser=superuser)
         self._advance(now)
 
+    def replace_current(self, track: Track, now: int) -> None:
+        """当前这首在原平台放不了，换成别的平台的同一首，从头放。保留点歌人。"""
+        if self.current is None:
+            return
+        self.current = QueueItem(next(self._ids), track, self.current.added_by, self.current.added_by_name)
+        self._bump(Anchor(now, 0, paused=self.anchor.paused))
+
     def skip_current(self, now: int) -> None:
         """当前这首放不了时由服务端跳过，不检查权限，不记入播放历史。"""
         self.current = None

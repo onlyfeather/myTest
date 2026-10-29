@@ -27,10 +27,21 @@ class Member:
         return self.card or self.nickname or self.qq
 
 
+@dataclass(frozen=True)
+class Profile:
+    """资料卡里群成员信息之外的部分（get_stranger_info）。拿不到时各项为空。"""
+
+    signature: str = ""
+    qq_level: int = 0
+    sex: str = ""  # male / female / unknown
+
+
 class BotBridge(Protocol):
     async def member(self, group_id: str, qq: str) -> Member | None:
         """查群成员。不在群里返回 None；bot 不在线抛 BotUnavailable。"""
         ...
+
+    async def profile(self, qq: str) -> Profile: ...
 
     def is_superuser(self, qq: str) -> bool: ...
 

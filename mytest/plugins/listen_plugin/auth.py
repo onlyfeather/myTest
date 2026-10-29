@@ -150,6 +150,13 @@ class CodeBook:
         self._purge(now)
         return browser in self._by_browser
 
+    def current(self, browser: str, now: int) -> tuple[str, int] | None:
+        """这个浏览器当前有效的码和过期时间。同一浏览器开了几个标签页时，大家都显示这一个。"""
+        self._purge(now)
+        code = self._by_browser.get(browser)
+        pending = self._by_code.get(code) if code else None
+        return (pending.code, pending.expires) if pending else None
+
 
 class Sessions:
     """会话 cookie。数据库只存会话 ID 的 SHA-256。"""

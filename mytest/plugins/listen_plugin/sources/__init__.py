@@ -3,9 +3,19 @@ from .base import (
     PLATFORMS,
     MusicSource,
     SourceError,
+    SourceUnavailable,
     Stream,
     Track,
     parse_ref,
 )
 
-__all__ = ["PLATFORMS", "PLATFORM_NAMES", "MusicSource", "SourceError", "Stream", "Track", "parse_ref"]
+__all__ = [
+    "PLATFORMS",
+    "PLATFORM_NAMES",
+    "MusicSource",
+    "SourceError",
+    "SourceUnavailable",
+    "Stream",
+    "Track",
+    "parse_ref",
+]

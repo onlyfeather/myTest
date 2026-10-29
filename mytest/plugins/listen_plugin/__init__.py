@@ -23,9 +23,12 @@ from nonebot.plugin import PluginMetadata
 from .._shared.events import group_id_of
 from .._shared.help import HelpTopic, help_registry
 from .auth import AuthError
-from .bridge import BotUnavailable, Member
-from .config import listen_settings, load_deployment
+from .bridge import BotUnavailable, Member, Profile
+from .config import Deployment, listen_settings, load_deployment
 from .service import ListenConfig, ListenService
+from .sources.base import MusicSource
+from .sources.kugou import KugouSource
+from .sources.netease import NeteaseSource
 from .sources.qqmusic import QQMusicSource
 from .store import Store
 
@@ -68,6 +71,19 @@ class NoneBotBridge:
             role=str(info.get("role") or "member"),
         )
 
+    async def profile(self, qq: str) -> Profile:
+        try:
+            info = await get_bot().call_api("get_stranger_info", user_id=int(qq), no_cache=False)
+        except Exception:  # noqa: BLE001 资料卡的附加信息拿不到就不显示
+            return Profile()
+        info = info or {}
+        # NapCat 返回 long_nick 作为个性签名，qqLevel 是 QQ 等级。
+        return Profile(
+            signature=str(info.get("long_nick") or info.get("sign") or "")[:200],
+            qq_level=int(info.get("qqLevel") or info.get("level") or 0),
+            sex=str(info.get("sex") or ""),
+        )
+
     def is_superuser(self, qq: str) -> bool:
         superusers = get_driver().config.superusers
         return qq in superusers or f"onebot:{qq}" in superusers
@@ -82,6 +98,18 @@ def _data_dir() -> Path:
         fallback = Path.cwd() / "data" / "listen"
         logger.warning(f"[一起听] localstore 不可用({e})，数据目录回退到 {fallback}")
         return fallback
+
+
+def _sources(dep: Deployment) -> dict[str, MusicSource]:
+    found: dict[str, MusicSource] = {"qq": QQMusicSource()}
+    if dep.netease_api:
+        found["netease"] = NeteaseSource(dep.netease_api)
+    if dep.kugou_api:
+        found["kugou"] = KugouSource(dep.kugou_api)
+    missing = [name for name, url in (("NETEASE_API_URL", dep.netease_api), ("KUGOU_API_URL", dep.kugou_api)) if not url]
+    if missing:
+        logger.info("[一起听] 没有设置 {}，对应的平台不接入", "、".join(missing))
+    return found
 
 
 deployment, disabled_reason = load_deployment()
@@ -103,7 +131,7 @@ if deployment is not None:
         ),
         bridge=NoneBotBridge(),
         store=Store(_data_dir() / "listen.db"),
-        sources={"qq": QQMusicSource()},
+        source_map=_sources(deployment),
     )
 else:
     logger.warning("[一起听] 未启用：{}", disabled_reason)

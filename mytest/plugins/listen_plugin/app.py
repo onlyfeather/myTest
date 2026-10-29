@@ -28,7 +28,7 @@ from .bridge import BotUnavailable
 from .hub import Connection
 from .room import RoomError
 from .service import ListenService
-from .sources.base import PLATFORM_NAMES, SourceError
+from .sources.base import PLATFORM_NAMES, SourceError, Track
 
 STATIC = Path(__file__).parent / "static"
 SESSION_COOKIE = "listen_session"
@@ -150,6 +150,7 @@ def create_app(service: ListenService) -> FastAPI:
     config = service.config
     login_limiter = RateLimiter(20, 60)
     search_limiter = RateLimiter(30, 60)
+    fallback_locks: dict[str, asyncio.Lock] = {}
     headers = security_headers_for(config.origin)
 
     @app.middleware("http")
@@ -256,16 +257,18 @@ def create_app(service: ListenService) -> FastAPI:
             body = {}
         if not isinstance(body, dict):
             body = {}
-        if body.get("renew") or not service.codes.active(browser, now):
+        existing = service.codes.current(browser, now)
+        if body.get("renew") or existing is None:
             if not login_limiter.allow(ip_of(request)):
                 return error(429, "试得太频繁了，稍后再试")
             try:
-                code = service.codes.create(browser, now)
+                service.codes.create(browser, now)
             except AuthError as e:
                 return error(429, str(e))
-            resp = JSONResponse({"ok": True, "done": False, "code": code})
-        else:
-            resp = JSONResponse({"ok": True, "done": False})
+            existing = service.codes.current(browser, now)
+        # 每次都把当前有效的码带上：刷新页面、开了几个标签页时，显示的都是同一个能用的码。
+        code, expires = existing or ("", now)
+        resp = JSONResponse({"ok": True, "done": False, "code": code, "expires_in_ms": max(0, expires - now)})
         if new_browser:
             resp.set_cookie(BROWSER_COOKIE, browser, max_age=600, httponly=True, secure=config.secure,
                             samesite="strict", path="/api/login")
@@ -329,17 +332,60 @@ def create_app(service: ListenService) -> FastAPI:
             return JSONResponse({"ok": True, "tracks": []})
         if not search_limiter.allow(identity.qq):
             return error(429, "搜得太快了，稍等一下")
+        if platform not in service.sources:
+            return error(400, f"{PLATFORM_NAMES.get(platform, '这个平台')}没有接入")
         try:
-            tracks = await asyncio.wait_for(service.search(keyword, platform), timeout=8)
+            tracks = await service.search(keyword, platform)
         except SourceError as e:
             return error(502, str(e))
-        except TimeoutError:
-            return error(504, f"{PLATFORM_NAMES.get(platform, platform)} 搜索超时")
         return JSONResponse({
             "ok": True,
             "tracks": [t.to_dict() for t in tracks],
             "vip_ready": service.vip_ready(platform),
         })
+
+    @app.get("/api/platforms")
+    async def platforms(request: Request) -> Response:
+        found = await current(request)
+        if isinstance(found, JSONResponse):
+            return found
+        return JSONResponse({"ok": True, "platforms": service.platforms()})
+
+    @app.get("/api/lyrics")
+    async def lyrics(request: Request, ref: str = "") -> Response:
+        found = await current(request)
+        if isinstance(found, JSONResponse):
+            return found
+        track = service.known_track(ref)
+        if track is None:
+            room = service.hub.get(found[0].group_id)
+            items = ([room.current] if room and room.current else []) + (room.queue if room else [])
+            track = next((i.track for i in items if i.track.ref == ref), None)
+        if track is None:
+            return error(404, "找不到这首歌")
+        try:
+            lrc, trans = await service.lyrics(track)
+        except SourceError as e:
+            return error(502, str(e))
+        return JSONResponse({"ok": True, "lrc": lrc[:200_000], "trans": trans[:200_000]})
+
+    @app.get("/api/members/{qq}")
+    async def member_profile(qq: str, request: Request) -> Response:
+        """资料卡。只给同群成员看。"""
+        found = await current(request)
+        if isinstance(found, JSONResponse):
+            return found
+        identity, _ = found
+        if not qq.isdigit() or len(qq) > 12:
+            return error(404, "没有这个人")
+        try:
+            member = await service.members.member(identity.group_id, qq)
+            profile = await service.profile(identity.group_id, qq) if member else None
+        except BotUnavailable:
+            return error(503, "凛音暂时不在线")
+        if member is None or profile is None:
+            return error(404, "没有这个人")
+        return JSONResponse({"ok": True, **profile})
 
     @app.get("/api/stream")
     async def stream(request: Request, ref: str = "") -> Response:
@@ -354,24 +400,37 @@ def create_app(service: ListenService) -> FastAPI:
         if track is None:
             return error(404, "这首歌不在播放队列里")
         try:
-            result = await asyncio.wait_for(service.stream(track, service.bitrate_for(identity.group_id)), 10)
-        except (SourceError, TimeoutError) as e:
-            message = str(e) if isinstance(e, SourceError) else "取播放地址超时"
-            await skip_unplayable(identity.group_id, track.ref, message)
-            return error(502, message)
+            result = await service.stream(track, service.bitrate_for(identity.group_id))
+        except SourceError as e:
+            await handle_unplayable(identity.group_id, track, str(e))
+            return error(502, str(e))
         return JSONResponse({"ok": True, "url": result.url, "bitrate": result.bitrate})
 
-    async def skip_unplayable(group_id: str, ref: str, reason: str) -> None:
-        """正在放的这首拿不到地址：所有人都放不了，由服务端直接跳过，不让房间卡住。"""
-        room = service.hub.get(group_id)
-        if room is None or room.current is None or room.current.track.ref != ref:
-            return
-        label = room.current.track.label()
-        room.skip_current(service.clock())
-        service.hub.save(group_id)
-        await service.hub.push_queue(group_id)
-        await service.hub.push_state(group_id)
-        await system_chat(group_id, f"{label} 放不了，跳过了（{reason}）")
+    async def handle_unplayable(group_id: str, track: Track, reason: str) -> None:
+        """正在放的这首拿不到地址：先在别的平台找同一首换上，找不到再跳过，不让房间卡住。
+
+        多个听众会同时报错，用锁保证只处理一次。
+        """
+        lock = fallback_locks.setdefault(group_id, asyncio.Lock())
+        async with lock:
+            room = service.hub.get(group_id)
+            if room is None or room.current is None or room.current.track.ref != track.ref:
+                return
+            label = track.label()
+            replacement = await service.substitute(track)
+            room = service.hub.get(group_id)
+            if room is None or room.current is None or room.current.track.ref != track.ref:
+                return
+            if replacement is not None:
+                room.replace_current(replacement, service.clock())
+                note = f"{label} 在{PLATFORM_NAMES[track.platform]}放不了，换成{PLATFORM_NAMES[replacement.platform]}的同一首"
+            else:
+                room.skip_current(service.clock())
+                note = f"{label} 放不了，跳过了（{reason}）"
+            service.hub.save(group_id)
+            await service.hub.push_queue(group_id)
+            await service.hub.push_state(group_id)
+            await system_chat(group_id, note)
 
     # ------------------------------------------------------------ WebSocket
 
@@ -498,11 +557,20 @@ def create_app(service: ListenService) -> FastAPI:
                     track = service.known_track(msg.ref or "")
                     if track is None:
                         raise RoomError("找不到这首歌，重新搜一下")
-                    if track.vip and not service.vip_ready(track.platform):
-                        # 放不出来的歌进了队列，会卡住所有人，所以点的时候就拦下。
-                        raise RoomError("这是会员歌，配置好会员账号之前放不了")
+                    note = f"{name} 点了 {track.label()}"
+                    if not service.playable(track):
+                        # 会员歌在原平台放不了：在别的平台找同一首能放的，找不到就不让点（进了队列会卡住所有人）。
+                        replacement = await service.substitute(track)
+                        if replacement is None:
+                            raise RoomError("这是会员歌，别的平台也没找到能放的同一首")
+                        note += f"（{PLATFORM_NAMES[track.platform]}要会员，换成{PLATFORM_NAMES[replacement.platform]}的）"
+                        track = replacement
+                        room = service.hub.get(group_id)
+                        if room is None:
+                            return
+                        now = service.clock()
                     room.add(track, qq, name)
-                    await system_chat(group_id, f"{name} 点了 {track.label()}")
+                    await system_chat(group_id, note)
                     if room.current is None:
                         room.next(qq, now, superuser=True)
                         await service.hub.push_state(group_id)
@@ -519,8 +587,11 @@ def create_app(service: ListenService) -> FastAPI:
                 await system_chat(group_id, f"{name} {'允许' if msg.allow_control else '关掉了'}大家控制播放")
         except RoomError as e:
             await conn.send({"type": "error", "message": str(e)})
-            await conn.send({"type": "state", "state": room.state(service.clock())})
+            latest = service.hub.get(group_id)  # 换源时房间可能已经关了
+            if latest is not None:
+                await conn.send({"type": "state", "state": latest.state(service.clock())})
 
+    app.state.handle_unplayable = handle_unplayable  # 测试并发换源时直接调用
     return app
 
 

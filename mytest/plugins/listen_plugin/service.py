@@ -14,7 +14,8 @@ from urllib.parse import urlsplit
 from .auth import AuthError, CodeBook, Identity, LinkSigner, Sessions
 from .bridge import BotBridge, Member, MembershipCache
 from .hub import Hub
-from .sources.base import MusicSource, SourceError, Stream, Track
+from .sources.base import PLATFORM_NAMES, MusicSource, Stream, Track
+from .sources.resolver import Sources
 from .store import Store
 from .sync import now_ms
 
@@ -52,8 +53,9 @@ class ListenService:
     config: ListenConfig
     bridge: BotBridge
     store: Store
-    sources: dict[str, MusicSource]
+    source_map: dict[str, MusicSource]
     clock: Callable[[], int] = now_ms
+    sources: Sources = field(init=False)
     signer: LinkSigner = field(init=False)
     sessions: Sessions = field(init=False)
     codes: CodeBook = field(init=False)
@@ -66,9 +68,11 @@ class ListenService:
         self.codes = CodeBook()
         self.members = MembershipCache(self.bridge)
         self.hub = Hub(self.store, clock=self.clock)
+        self.sources = Sources(self.source_map)
         # 搜索结果按 ref 缓存。点歌只接受搜索过的 ref，歌名等信息以服务端为准，客户端改不了。
         self._tracks: OrderedDict[str, Track] = OrderedDict()
         self._streams: dict[tuple[str, int], _CachedStream] = {}
+        self._lyrics: OrderedDict[str, tuple[str, str]] = OrderedDict()
 
     # ------------------------------------------------------------ 白名单和成员
 
@@ -91,6 +95,30 @@ class ListenService:
 
     def is_superuser(self, qq: str) -> bool:
         return self.bridge.is_superuser(qq)
+
+    async def profile(self, group_id: str, qq: str) -> dict[str, object] | None:
+        """资料卡：群名片、头衔、群等级、个性签名、QQ 等级，以及在本群一起听里点过的歌数。"""
+        member = await self.members.member(group_id, qq)
+        if member is None:
+            return None
+        extra = await self.bridge.profile(qq)
+        room = self.hub.get(group_id)
+        in_queue = sum(1 for item in room.queue if item.added_by == qq) if room else 0
+        playing = bool(room and room.current and room.current.added_by == qq)
+        return {
+            "qq": qq,
+            "name": member.name,
+            "nickname": member.nickname,
+            "card": member.card,
+            "title": member.title,
+            "group_level": member.level,
+            "role": member.role,
+            "signature": extra.signature,
+            "qq_level": extra.qq_level,
+            "in_queue": in_queue,
+            "playing_theirs": playing,
+            "online": any(m["qq"] == qq for m in self.hub.members(group_id)),
+        }
 
     async def member_left(self, group_id: str, qq: str) -> None:
         self.members.forget(group_id, qq)
@@ -133,17 +161,43 @@ class ListenService:
     def known_track(self, ref: str) -> Track | None:
         return self._tracks.get(ref)
 
+    def platforms(self) -> list[dict[str, object]]:
+        return [
+            {"id": p, "name": PLATFORM_NAMES.get(p, p), "available": self.sources.available(p),
+             "vip_ready": self.vip_ready(p)}
+            for p in self.sources.platforms()
+        ]
+
     async def search(self, keyword: str, platform: str = "qq", limit: int = 20) -> list[Track]:
-        source = self.sources.get(platform)
-        if source is None:
-            raise SourceError("这个平台还没接入")
-        tracks = await source.search(keyword, limit)
+        tracks = await self.sources.search(platform, keyword, limit)
         self.remember(tracks)
         return tracks
 
     def vip_ready(self, platform: str) -> bool:
         """这个平台配了会员账号（M3 接入），会员歌才放得出来。"""
         return bool(getattr(self.sources.get(platform), "vip_ready", False))
+
+    def playable(self, track: Track) -> bool:
+        return not track.vip or self.vip_ready(track.platform)
+
+    async def substitute(self, track: Track) -> Track | None:
+        """原平台放不了时，在别的平台找同一首能放的。找到后记住，点歌和取地址都能用。"""
+        found = await self.sources.find_elsewhere(track, vip_ready=self.vip_ready)
+        if not found:
+            return None
+        self.remember(found[:1])
+        return found[0]
+
+    async def lyrics(self, track: Track) -> tuple[str, str]:
+        hit = self._lyrics.get(track.ref)
+        if hit is not None:
+            return hit
+        result = await self.sources.lyrics(track)
+        self._lyrics[track.ref] = result
+        self._lyrics.move_to_end(track.ref)
+        while len(self._lyrics) > 300:
+            self._lyrics.popitem(last=False)
+        return result
 
     def bitrate_for(self, group_id: str) -> int:
         """在线人数超过阈值时降到 128kbps，省带宽。"""
@@ -157,10 +211,7 @@ class ListenService:
         now = time.monotonic()
         if cached and now < cached.expires:
             return cached.stream
-        source = self.sources.get(track.platform)
-        if source is None:
-            raise SourceError("这个平台还没接入")
-        stream = await source.stream(track, bitrate)
+        stream = await self.sources.stream(track, bitrate)
         # 提前 5 分钟当作过期，避免放到一半地址失效。
         self._streams[key] = _CachedStream(stream, now + max(60, stream.expires_in - 300))
         if len(self._streams) > 2000:

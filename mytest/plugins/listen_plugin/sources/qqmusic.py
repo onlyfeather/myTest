@@ -9,7 +9,7 @@ import asyncio
 import re
 from typing import Any
 
-from .base import SourceError, Stream, Track
+from .base import SourceError, SourceUnavailable, Stream, Track
 
 # 播放地址的 CDN。官方调度接口给的都是 http，这里用同一批里支持 https 的域名，浏览器不会当成混合内容拦掉。
 CDN = "https://ws.stream.qqmusic.qq.com/"
@@ -50,7 +50,7 @@ class QQMusicSource:
         try:
             res = await client.search.search_by_type(keyword, num=min(max(limit, 1), 50), highlight=False)
         except Exception as e:
-            raise SourceError(f"QQ 音乐搜索失败（{type(e).__name__}）") from e
+            raise SourceUnavailable(f"QQ 音乐搜索失败（{type(e).__name__}）") from e
         tracks = []
         for song in res.song or []:
             if not _MID.match(song.mid or ""):
@@ -80,10 +80,18 @@ class QQMusicSource:
         try:
             res = await client.song.get_song_urls([info], file_type=file_type)
         except Exception as e:
-            raise SourceError(f"QQ 音乐取播放地址失败（{type(e).__name__}）") from e
+            raise SourceUnavailable(f"QQ 音乐取播放地址失败（{type(e).__name__}）") from e
         item = res.data[0] if res.data else None
         if (item is None or not item.purl) and bitrate >= 320:
             return await self.stream(track, bitrate=128)
         if item is None or not item.purl:
             raise SourceError("QQ 音乐没有给播放地址，可能是会员歌或者已经下架")
         return Stream(url=CDN + item.purl, expires_in=int(res.expiration or 7200), bitrate=min(bitrate, 320))
+
+    async def lyrics(self, track: Track) -> tuple[str, str]:
+        client = await self._get()
+        try:
+            res = await client.lyric.get_lyric(track.id, trans=True)
+        except Exception as e:
+            raise SourceUnavailable(f"QQ 音乐歌词获取失败（{type(e).__name__}）") from e
+        return res.lyric or "", res.trans or ""

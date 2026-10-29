@@ -18,6 +18,18 @@ class SourceError(Exception):
     """音源出错。message 直接显示给用户。"""
 
 
+class SourceUnavailable(SourceError):
+    """平台本身出了问题（连不上、返回格式不对），计入熔断。“这首没有地址”这类正常结果用 SourceError。"""
+
+
+def https(url: object) -> str:
+    """平台给的封面和音频地址多是 http；三家的 CDN 都支持同一路径的 https，换掉以免被浏览器当成混合内容拦掉。"""
+    text = str(url or "")
+    if text.startswith("http://"):
+        return "https://" + text[len("http://"):]
+    return text if text.startswith("https://") else ""
+
+
 def parse_ref(ref: str) -> tuple[str, str]:
     m = _REF.match(ref or "")
     if not m:
@@ -77,3 +89,7 @@ class MusicSource(Protocol):
     async def search(self, keyword: str, limit: int = 20) -> list[Track]: ...
 
     async def stream(self, track: Track, bitrate: int = 320) -> Stream: ...
+
+    async def lyrics(self, track: Track) -> tuple[str, str]:
+        """返回 (LRC 原文, LRC 翻译)，没有时为空字符串。"""
+        ...

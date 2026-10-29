@@ -22,7 +22,12 @@ from mytest.plugins.listen_plugin.auth import (
     LinkSigner,
     Sessions,
 )
-from mytest.plugins.listen_plugin.bridge import BotUnavailable, Member, MembershipCache
+from mytest.plugins.listen_plugin.bridge import (
+    BotUnavailable,
+    Member,
+    MembershipCache,
+    Profile,
+)
 from mytest.plugins.listen_plugin.hub import IDLE_CLOSE_MS, Hub
 from mytest.plugins.listen_plugin.room import CONTROL_LIMIT, Room, RoomError
 from mytest.plugins.listen_plugin.service import ListenConfig, ListenService
@@ -264,6 +269,9 @@ class FakeBridge:
             raise BotUnavailable
         return self.members.get((group_id, qq))
 
+    async def profile(self, qq: str) -> Profile:
+        return Profile(signature=f"{qq} 的签名", qq_level=12)
+
     def is_superuser(self, qq: str) -> bool:
         return qq in self.superusers
 
@@ -320,16 +328,22 @@ def test_hub_reaps_idle_rooms():
 
 
 class FakeSource:
-    platform = "qq"
-
-    def __init__(self) -> None:
-        self.tracks = [make_track(1), make_track(2), make_track(3)]
+    def __init__(self, platform: str = "qq", tracks: list[Track] | None = None, *, vip_ready: bool = False) -> None:
+        self.platform = platform
+        self.vip_ready = vip_ready
+        self.tracks = tracks if tracks is not None else [make_track(1), make_track(2), make_track(3)]
+        self.broken: set[str] = set()
 
     async def search(self, keyword: str, limit: int = 20) -> list[Track]:
         return self.tracks[:limit]
 
     async def stream(self, track: Track, bitrate: int = 320) -> Stream:
-        return Stream(url=f"https://cdn.example/{track.id}.mp3", expires_in=7200, bitrate=bitrate)
+        if track.id in self.broken:
+            raise SourceError("下架了")
+        return Stream(url=f"https://cdn.example/{track.platform}/{track.id}.mp3", expires_in=7200, bitrate=bitrate)
+
+    async def lyrics(self, track: Track) -> tuple[str, str]:
+        return f"[00:01.00]{track.title}\n[00:05.50]第二句", "[00:01.00]translated"
 
 
 @pytest.fixture
@@ -342,7 +356,7 @@ def env():
         config=ListenConfig(public_url=ORIGIN, secret=SECRET, allowed_groups=lambda: allowed),
         bridge=bridge,
         store=Store(":memory:"),
-        sources={"qq": FakeSource()},
+        source_map={"qq": FakeSource()},
     )
     client = TestClient(create_app(service), base_url=ORIGIN)
     return service, bridge, client, allowed
@@ -399,7 +413,12 @@ def test_http_code_login(env):
     r = client.post("/api/login/code", json={}, headers=H).json()
     code = r["code"]
     assert not r["done"]
-    assert client.post("/api/login/code", json={}, headers=H).json() == {"ok": True, "done": False}
+    again = client.post("/api/login/code", json={}, headers=H).json()
+    assert again["code"] == code and not again["done"], "polling returns the same code (refresh / multiple tabs)"
+    assert 0 < again["expires_in_ms"] <= 5 * 60 * 1000
+    renewed = client.post("/api/login/code", json={"renew": True}, headers=H).json()["code"]
+    assert not service.redeem_code(code, "2", GROUP) or renewed == code, "renew invalidates the old code"
+    code = renewed
     assert service.redeem_code(code, "2", GROUP)
     r = client.post("/api/login/code", json={}, headers=H).json()
     assert r["done"] and r["name"] == "群友"
@@ -429,10 +448,9 @@ def test_unplayable_current_track_is_skipped(env):
     room.play("1", service.clock())
     broken = tracks[0]["ref"]
 
-    async def fail(track: Track, bitrate: int = 320) -> Stream:
-        raise SourceError("下架了")
-
-    service.sources["qq"].stream = fail  # type: ignore[method-assign]
+    source = service.source_map["qq"]
+    assert isinstance(source, FakeSource)
+    source.broken.add(parse_ref(broken)[1])
     r = client.get("/api/stream", params={"ref": broken})
     assert r.status_code == 502
     assert room.current is not None and room.current.track.ref == tracks[1]["ref"]
