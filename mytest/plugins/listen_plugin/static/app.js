@@ -13,8 +13,7 @@ const s = reactive({
   code: '', codeExpires: 0, codeError: '',
   me: null,
   state: null, queue: [], members: [], chat: [],
-  // unlocked：浏览器允许出声。进来先直接试着播，被浏览器拦下才变成 false，点页面任意位置恢复。
-  connected: false, closeInfo: '', unlocked: true,
+  connected: false, closeInfo: '', unlocked: false,
   tick: 0, dragging: false, dragValue: 0,
   q: '', results: [], searching: false, searchError: '', vipReady: false,
   platforms: [], platform: 'qq',
@@ -84,7 +83,6 @@ async function boot() {
   s.notice = ''; // 已经登录了，链接失效的提示没有意义
   loadPlatforms();
   loadLiked();
-  armGestureUnlock();
   connect();
 }
 
@@ -214,10 +212,8 @@ function syncAudio() {
   if (audio.paused) {
     audio.currentTime = expected / 1000;
     audio.play().catch((e) => {
-      if (e.name !== 'NotAllowedError') return;
-      armGestureUnlock();
-      // 在后台被拒绝时不显示「开始收听」，回到页面后会再试。
-      if (!document.hidden) s.unlocked = false;
+      // 在后台被拒绝时不要求重新点「开始收听」，回到页面后会再试。
+      if (e.name === 'NotAllowedError' && !document.hidden) s.unlocked = false;
     });
     return;
   }
@@ -243,7 +239,7 @@ audio.addEventListener('error', () => {
   }, 1000 * retries);
 });
 
-// 一段很短的静音，在用户操作里播一下，解锁 iOS 上的 <audio>。
+// 一段很短的静音，点「开始收听」时在用户手势里播一下，解锁 iOS 上的 <audio>。
 function silentWav() {
   const n = 800;
   const buf = new ArrayBuffer(44 + n);
@@ -257,44 +253,7 @@ function silentWav() {
   return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 
-// 浏览器不允许没有用户操作就出声（自动播放限制，网页绕不过去）。被拦下时，在页面上点任意一下就开始播，
-// 不用找按钮。进来时也先挂上：第一次点击顺便在用户操作里解锁 <audio>（iOS 需要），之后切歌不用再点。
-// 触摸只有 touchend / pointerup 算用户操作，pointerdown 不算。
-const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
-let gestureArmed = false;
-
-function onGesture() {
-  disarmGestureUnlock();
-  if (localPaused || !audio.paused) return; // 自己在锁屏上暂停过，或者已经在放
-  const st = s.state;
-  if (st && st.current && !st.paused) { unlock(); return; }
-  // 现在没在放歌：静音播一下再停，只为解锁，下一首开始时就能直接出声。
-  audio.muted = true;
-  const restore = () => { audio.pause(); audio.muted = false; };
-  if (!audio.src) {
-    audio.src = silentWav();
-    audio.play().catch(() => {}).finally(() => {
-      restore();
-      if (audio.src.startsWith('blob:')) { audio.removeAttribute('src'); loadedRef = null; applyState(); }
-    });
-  } else {
-    audio.play().catch(() => {}).finally(restore);
-  }
-}
-
-function armGestureUnlock() {
-  if (gestureArmed) return;
-  gestureArmed = true;
-  for (const t of GESTURES) document.addEventListener(t, onGesture, { capture: true, passive: true });
-}
-
-function disarmGestureUnlock() {
-  gestureArmed = false;
-  for (const t of GESTURES) document.removeEventListener(t, onGesture, { capture: true });
-}
-
 async function unlock() {
-  disarmGestureUnlock();
   s.unlocked = true;
   localPaused = false;
   if (!audio.src) {
@@ -826,7 +785,7 @@ const App = {
         <div class="row muted small"><span>{{ fmt(position) }}</span><span class="grow"></span><span>{{ fmt(track.duration_ms) }}</span></div>
       </div>
       <div class="controls">
-        <button v-if="!s.unlocked && track" class="primary" @click="unlock()">浏览器拦下了自动播放，点一下页面就开始</button>
+        <button v-if="!s.unlocked && track" class="primary" @click="unlock()">开始收听</button>
         <template v-else>
           <button v-if="!s.state || s.state.paused" :disabled="!canControl || (!track && !s.queue.length)" @click="resume()">播放</button>
           <button v-else :disabled="!canControl" @click="control('pause')">暂停</button>
