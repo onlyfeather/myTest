@@ -516,7 +516,9 @@ function renderMain() {
 }
 
 /* 账号面板：扫码登录、退出。凭证只在服务端，这里只显示状态。 */
-const KIND_NAMES = { qq: "QQ 扫码", wx: "微信扫码", app: "扫码登录" };
+const KIND_NAMES = { qq: "手机 QQ 扫码", wx: "微信扫码", app: "扫码登录" };
+// QQ 音乐的 app 是 QQ 音乐 App 扫码
+const kindName = (item, kind) => (item.platform === "qq" && kind === "app" ? "QQ 音乐 App 扫码" : KIND_NAMES[kind] || kind);
 let qrTimer = 0;
 
 function accountCard(s) {
@@ -528,7 +530,7 @@ function accountCard(s) {
       : h("span", { class: "badge" }, "未登录");
     const buttons = (item.login_kinds || []).map((kind) =>
       h("button", { class: "btn" + (item.logged_in ? "" : " primary"), type: "button", onclick: () => openQr(s, item, kind) },
-        (item.logged_in ? "换个账号 · " : "") + (KIND_NAMES[kind] || kind)));
+        (item.logged_in ? "换个账号 · " : "") + kindName(item, kind)));
     const logout = item.logged_in || item.expired ? h("button", { class: "btn", type: "button", onclick: async () => {
       if (!confirm(`退出${item.name}的登录吗？退出后这个平台的会员歌就放不了了。`)) return;
       const r = await api(`/accounts/${encodeURIComponent(s.id)}/${encodeURIComponent(item.platform)}/logout`, { method: "POST" }).catch(() => null);
@@ -558,7 +560,7 @@ async function openQr(s, item, kind) {
   const text = h("p", { class: "help", style: "text-align:center" }, "二维码加载中…");
   const img = h("img", { alt: "登录二维码", style: "display:block;width:220px;height:220px;margin:8px auto;border-radius:8px;background:#fff;object-fit:contain" });
   const box = h("div", { class: "card", style: "padding:20px;max-width:320px;width:92vw;position:relative" },
-    h("h3", { style: "margin:0 0 4px;font-size:16px;text-align:center" }, `${item.name} · ${KIND_NAMES[kind] || kind}`),
+    h("h3", { style: "margin:0 0 4px;font-size:16px;text-align:center" }, `${item.name} · ${kindName(item, kind)}`),
     img, text,
     h("button", { class: "btn block", type: "button", onclick: closeQr }, "关闭"));
   const modal = h("div", { id: "qr-modal", style: "position:fixed;inset:0;background:rgba(0,0,0,.5);display:grid;place-items:center;z-index:20",

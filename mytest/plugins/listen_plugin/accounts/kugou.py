@@ -1,6 +1,10 @@
 """酷狗账号（KuGouMusicApi）。
 
-扫码成功返回 token + userid。凭证存 {"token", "userid", "dfid"}；请求时拼成 cookie 放在 POST 请求体里，不放 URL。
+扫码成功返回 token + userid。凭证存 {"token", "userid", "dfid"}；请求时放在 Authorization 头里，不放 URL。
+
+为什么用 Authorization 头（KuGouMusicApi server.js）：请求体里的 cookie 会整个替换掉服务自己注入的设备
+cookie（KUGOU_API_MID 等，签名要用），Authorization 头则是合并进去。服务解析时只按 ";" 切、不去空格，
+所以分隔符不能带空格，否则 " userid" 读不到，酷狗回 20018。
 """
 
 from __future__ import annotations
@@ -27,9 +31,10 @@ _QR = {0: "expired", 1: "waiting", 2: "scanned", 4: "done"}
 _VIP_PRIVILEGE = 10
 
 
-def _cookie(cred: dict[str, Any]) -> str:
-    parts = [f"{k}={cred[k]}" for k in ("token", "userid", "dfid") if cred.get(k)]
-    return "; ".join(parts)
+def auth_header(cred: dict[str, Any]) -> dict[str, str]:
+    """登录信息放进 Authorization 头，格式 token=..;userid=..;dfid=..（不能有空格）。"""
+    parts = [f"{k}={cred[k]}" for k in ("token", "userid", "dfid") if str(cred.get(k) or "").strip()]
+    return {"Authorization": ";".join(parts)} if parts else {}
 
 
 class KugouAccounts:
@@ -43,10 +48,10 @@ class KugouAccounts:
         await self._client.aclose()
 
     async def _call(self, path: str, cred: dict[str, Any] | None = None, **params: str | int) -> dict[str, Any]:
-        # 和网易云一样：KuGouMusicApi 的缓存只看 URL，URL 里必须带随机数；登录信息放请求体，不进访问日志。
+        # 和网易云一样：KuGouMusicApi 的缓存只看 URL，URL 里必须带随机数；登录信息放请求头，不进访问日志。
         query: dict[str, str | int] = {**params, "timestamp": time.time_ns(), "nonce": secrets.token_hex(8)}
         try:
-            resp = await self._client.post(path, params=query, data={"cookie": _cookie(cred)} if cred else None)
+            resp = await self._client.post(path, params=query, headers=auth_header(cred) if cred else None)
         except httpx.HTTPError as e:
             raise AccountError(f"酷狗接口连不上（{type(e).__name__}）") from e
         try:

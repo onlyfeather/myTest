@@ -195,6 +195,9 @@ class Library:
             start = await acc.qr_start(kind)
         except AccountError as e:
             raise LibraryError(str(e)) from e
+        except Exception as e:
+            logger.opt(exception=e).warning("[一起听] {}二维码生成出错", PLATFORM_NAMES.get(platform, platform))
+            raise LibraryError(f"二维码生成失败（{type(e).__name__}），详情见 NoneBot 日志") from e
         sid = secrets.token_urlsafe(18)
         self._qr[sid] = _QrSession(owner, platform, kind, start.session, self._monotonic())
         return sid, start
@@ -208,11 +211,17 @@ class Library:
         if qs.status == "done":
             return {"status": "done", "playlists": [_remote_dict(p) for p in qs.playlists]}
         acc = self._account(qs.platform)
+        name = PLATFORM_NAMES.get(qs.platform, qs.platform)
         try:
             state = await acc.qr_poll(qs.session)
         except AccountError as e:
             self._qr.pop(sid, None)
+            logger.info("[一起听] {}扫码登录失败：{}", name, e)
             raise LibraryError(str(e)) from e
+        except Exception as e:
+            self._qr.pop(sid, None)
+            logger.opt(exception=e).warning("[一起听] {}扫码登录出错", name)
+            raise LibraryError(f"{name}登录出错（{type(e).__name__}），详情见 NoneBot 日志") from e
         if state.status != "done" or not state.credential:
             if state.status in ("expired", "refused"):
                 self._qr.pop(sid, None)
@@ -221,6 +230,7 @@ class Library:
             info = await acc.account(state.credential)
         except AccountError as e:
             self._qr.pop(sid, None)
+            logger.info("[一起听] {}扫码成功，但读不到账号信息：{}", name, e)
             raise LibraryError(f"登录成功了，但读不到账号信息：{e}") from e
         async with self._lock(owner, qs.platform):
             self._save(owner, qs.platform, state.credential, info)

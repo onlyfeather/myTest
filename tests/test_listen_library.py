@@ -601,5 +601,215 @@ def test_kugou_accounts():
     with pytest.raises(AccountError):
         run(acc.playlists(account_id="42"))  # 酷狗没有公开歌单接口
     for r in seen:
-        assert "token=" not in str(r.url).lower() or "T" not in r.url.params.get("cookie", ""), r.url
-        assert "cookie" not in r.url.params
+        assert "cookie" not in r.url.params and "T" not in str(r.url.params.get("token", "")), r.url
+    logged_in = [r for r in seen if "authorization" in r.headers]
+    assert logged_in and all(r.url.path not in ("/login/qr/key", "/login/qr/check") for r in logged_in)
+    assert kugou_server_cookie(logged_in[0]) == {"token": "T", "userid": "42", "dfid": "D"}
+
+
+def kugou_server_cookie(request: httpx.Request) -> dict[str, str]:
+    """照搬 KuGouMusicApi 的解析（server.js + util.cookieToJson）：按 ";" 切、按 "=" 切，不去空格。
+
+    实测（2026-10-29，KuGouMusicApi 1.6.3）：请求体里的 cookie 会替换掉服务注入的设备 cookie，
+    "token=T; userid=42" 解析成 {"token": "T", " userid": "42"}，userid 读不到，酷狗回 20018。
+    """
+    out: dict[str, str] = {}
+    for part in request.headers.get("authorization", "").split(";"):
+        key, _, value = part.partition("=")
+        out[key] = value
+    return out
+
+
+def test_kugou_auth_header_has_no_spaces():
+    from mytest.plugins.listen_plugin.accounts.kugou import auth_header
+
+    assert auth_header({"token": "T", "userid": "42", "dfid": "D"}) == {"Authorization": "token=T;userid=42;dfid=D"}
+    assert auth_header({"token": "T", "userid": "42", "dfid": ""}) == {"Authorization": "token=T;userid=42"}
+    assert auth_header({}) == {}
+
+
+def test_kugou_vip_stream_sends_login_in_header():
+    from mytest.plugins.listen_plugin.sources.base import Track
+    from mytest.plugins.listen_plugin.sources.kugou import KugouSource
+
+    seen: list[httpx.Request] = []
+    routes = {"/song/url": {"status": 1, "url": ["http://fs.kugou.com/vip.mp3"]}}
+    src = KugouSource("http://kg", transport=ncm_mock(routes, seen))
+    src.bind_credential(lambda: {"token": "T", "userid": "42", "dfid": "D"}, lambda message: None)
+    track = Track("kugou", "B" * 32, "会员歌", "歌手", duration_ms=1, vip=True, file_id="1_2")
+    assert run(src.stream(track, 320)).url == "https://fs.kugou.com/vip.mp3"
+    assert kugou_server_cookie(seen[-1]) == {"token": "T", "userid": "42", "dfid": "D"}
+    assert "cookie" not in seen[-1].url.params and seen[-1].content == b""
+
+
+# ---------------------------------------------------------------- QQ 音乐扫码
+
+
+def test_qq_cookie_snapshot_survives_empty_cookie():
+    """qqmusic-api-python 0.8.2：check_sig 响应里有空值 cookie 时，原函数抛 KeyError。"""
+    pytest.importorskip("qqmusic_api")
+    from niquests.cookies import RequestsCookieJar
+    from qqmusic_api.core import executor, response
+
+    from mytest.plugins.listen_plugin.accounts.qqmusic import patch_cookie_snapshot
+
+    jar = RequestsCookieJar()
+    jar.set("p_skey", "abc", domain=".qq.com")
+    jar.set("pt_recent_uins", "", domain=".ptlogin2.qq.com")
+
+    class Resp:
+        status_code, url, headers, content, text = 200, "https://ssl.ptlogin2.graph.qq.com/check_sig", {}, b"", ""
+        cookies = jar
+
+    patch_cookie_snapshot()
+    for fn in (response.snapshot_payload, executor.snapshot_payload):
+        payload = fn(Resp())
+        assert payload.cookies == {"p_skey": "abc", "pt_recent_uins": ""}
+        assert payload.cookies.get("p_skey") == "abc"
+
+
+class _FakeQr:
+    data, mimetype, identifier = b"png", "image/png", "qr-id"
+
+
+def _qq_accounts_with(monkeypatch, events):
+    """把 QQ 音乐库换成假的：get_qrcode 给二维码，checking_mobile_qrcode 依次推送 events。"""
+    pytest.importorskip("qqmusic_api")
+    from qqmusic_api.models.login import QRLoginType
+
+    from mytest.plugins.listen_plugin.accounts import qqmusic
+
+    asked: list[Any] = []
+
+    class Login:
+        async def get_qrcode(self, login_type):
+            asked.append(login_type)
+            return _FakeQr()
+
+        async def checking_mobile_qrcode(self, qr, deadline=None):
+            for event in events:
+                if isinstance(event, BaseException):
+                    raise event
+                await asyncio.sleep(0)
+                yield event
+
+    class Client:
+        login = Login()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    acc = qqmusic.QQMusicAccounts()
+    monkeypatch.setattr(acc, "_client", lambda credential=None: Client())
+    return acc, asked, QRLoginType
+
+
+def _result(event, credential=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(event=event, credential=credential)
+
+
+def test_qq_app_scan_flow(monkeypatch):
+    pytest.importorskip("qqmusic_api")
+    from qqmusic_api import Credential
+    from qqmusic_api.models.login import QRCodeLoginEvents as E
+
+    cred = Credential(musicid=42, musickey="Q_H_L_key", login_type=2)
+    acc, asked, types_ = _qq_accounts_with(monkeypatch, [_result(E.SCAN), _result(E.CONF), _result(E.DONE, cred)])
+    assert acc.login_kinds[0] == "app", "QQ 音乐 App 扫码排第一"
+
+    async def go():
+        start = await acc.qr_start("app")
+        assert start.image.startswith("data:image/png;base64,") and "QQ 音乐 App" in start.hint
+        states = []
+        for _ in range(20):
+            state = await acc.qr_poll(start.session)
+            states.append(state.status)
+            if state.status == "done":
+                return states, state
+            await asyncio.sleep(0)
+        raise AssertionError(states)
+
+    states, done = run(go())
+    assert asked == [types_.MOBILE]
+    assert done.credential["musicid"] == 42 and done.credential["musickey"] == "Q_H_L_key"
+    assert states[-1] == "done"
+    assert not acc._app, "finished scans are dropped"
+
+
+def test_qq_app_scan_refused_and_errors(monkeypatch):
+    pytest.importorskip("qqmusic_api")
+    from qqmusic_api import LoginError
+    from qqmusic_api.models.login import QRCodeLoginEvents as E
+
+    async def until_final(acc, session):
+        for _ in range(20):
+            await asyncio.sleep(0)
+            state = await acc.qr_poll(session)
+            if state.status not in ("waiting", "scanned"):
+                return state.status
+        raise AssertionError("never finished")
+
+    acc, _, _ = _qq_accounts_with(monkeypatch, [_result(E.SCAN), _result(E.REFUSE)])
+    assert run(_run_refused(acc, until_final)) == "refused"
+
+    acc2, _, _ = _qq_accounts_with(monkeypatch, [_result(E.SCAN), LoginError("账号受限", code=20277)])
+
+    async def failing():
+        start = await acc2.qr_start("app")
+        for _ in range(20):
+            await asyncio.sleep(0)
+            await acc2.qr_poll(start.session)
+        raise AssertionError("no error")
+
+    with pytest.raises(AccountError, match="QQ 音乐登录失败"):
+        run(failing())
+
+    acc3, _, _ = _qq_accounts_with(monkeypatch, [_result(E.SCAN)])  # 推送结束还没扫：算过期
+    assert run(_run_refused(acc3, until_final)) == "expired"
+
+
+async def _run_refused(acc, until_final):
+    start = await acc.qr_start("app")
+    return await until_final(acc, start.session)
+
+
+def test_qq_web_kinds_still_poll(monkeypatch):
+    pytest.importorskip("qqmusic_api")
+    from qqmusic_api.models.login import QRCodeLoginEvents as E
+
+    acc, asked, types_ = _qq_accounts_with(monkeypatch, [])
+
+    async def check_qrcode(qr):
+        return _result(E.SCAN)
+
+    acc._client().login.check_qrcode = check_qrcode
+
+    async def go():
+        start = await acc.qr_start("qq")
+        assert "手机 QQ" in start.hint and "扫不了" in start.hint
+        return (await acc.qr_poll(start.session)).status
+
+    assert run(go()) == "waiting"
+    assert asked == [types_.QQ]
+
+
+def test_qq_close_cancels_app_watchers(monkeypatch):
+    pytest.importorskip("qqmusic_api")
+    from qqmusic_api.models.login import QRCodeLoginEvents as E
+
+    acc, _, _ = _qq_accounts_with(monkeypatch, [_result(E.SCAN)] + [_result(E.SCAN)] * 1000)
+
+    async def go():
+        await acc.qr_start("app")
+        task = next(iter(acc._app.values())).task
+        await acc.close()
+        await asyncio.sleep(0)
+        return task
+
+    task = run(go())
+    assert task.done()

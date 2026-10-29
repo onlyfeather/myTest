@@ -503,6 +503,9 @@ async function loadLib() {
 }
 
 const libPlatformInfo = () => (s.lib ? s.lib.platforms.find((p) => p.id === s.libPlatform) : null);
+// QQ 音乐的 app 是 QQ 音乐 App 扫码；网易云、酷狗只有 app 一种，就叫扫码登录
+const kindName = (k) => (k === 'wx' ? '微信扫码' : k === 'qq' ? '手机 QQ 扫码'
+  : s.libPlatform === 'qq' ? 'QQ 音乐 App 扫码' : '扫码登录');
 const libAccount = () => (s.lib ? s.lib.accounts.find((a) => a.platform === s.libPlatform) : null);
 
 let qrTimer = 0;
@@ -642,7 +645,7 @@ const App = {
     return {
       s, track, position, canControl, isOwner, codeLeft, fmt, mine,
       lyricIndex, currentLine, openProfile, pickPlatform,
-      toggleLike, openPlaylist, loadLib, startQr, cancelQr, lookupUid, doImport, unbind, setHidden, removePlaylist,
+      toggleLike, openPlaylist, loadLib, startQr, cancelQr, kindName, lookupUid, doImport, unbind, setHidden, removePlaylist,
       libPlatformInfo, libAccount,
       openMine() { s.tab = 'mine'; if (!s.lib) loadLib(); if (s.me) openProfile(s.me.qq); },
       pickLibPlatform(id) { s.libPlatform = id; s.importList = null; s.libError = ''; s.uid = ''; cancelQr(); },
@@ -920,7 +923,7 @@ const App = {
                 <p class="small" v-if="libPlatformInfo().login_kinds.length">扫码登录：能导入全部歌单，包括私密的和“我喜欢”，每天自动同步。</p>
                 <div class="row wrap" v-if="libPlatformInfo().login_kinds.length">
                   <button v-for="k in libPlatformInfo().login_kinds" :key="k" class="primary" @click="startQr(k)">
-                    {{ k === 'wx' ? '微信扫码' : k === 'qq' ? 'QQ 扫码' : '扫码登录' }}</button>
+                    {{ kindName(k) }}</button>
                 </div>
                 <p class="muted small" v-else-if="s.lib && !s.lib.enabled">扫码登录没有开启（管理员还没配置）。</p>
                 <template v-if="libPlatformInfo().uid_import">

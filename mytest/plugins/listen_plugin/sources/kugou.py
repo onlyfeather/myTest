@@ -99,9 +99,9 @@ class KugouSource(VipCredential):
                 "quality": "320" if bitrate >= 320 else "128",
             }
             if cred:
-                # 会员账号的 token 放请求体（不进 KuGouMusicApi 的访问日志），URL 带随机数绕开缓存
-                cookie = "; ".join(f"{k}={cred[k]}" for k in ("token", "userid", "dfid") if cred.get(k))
-                data = await self._post("/song/url", cookie, **params)
+                # 会员账号的 token 放 Authorization 头（不进 KuGouMusicApi 的访问日志），URL 带随机数绕开缓存。
+                # 格式和原因见 accounts/kugou.py 的 auth_header。
+                data = await self._post("/song/url", cred, **params)
             else:
                 dfid = await self._device(renew=attempt > 0)
                 data = await self._get("/song/url", cookie=f"dfid={dfid}", **params)
@@ -120,10 +120,12 @@ class KugouSource(VipCredential):
             break
         raise SourceError("酷狗没有给播放地址，可能是会员歌或者已经下架")
 
-    async def _post(self, path: str, cookie: str, **params: str | int) -> dict:
+    async def _post(self, path: str, cred: dict, **params: str | int) -> dict:
+        from ..accounts.kugou import auth_header
+
         query: dict[str, str | int] = {**params, "timestamp": time.time_ns(), "nonce": secrets.token_hex(8)}
         try:
-            resp = await self._client.post(path, params=query, data={"cookie": cookie})
+            resp = await self._client.post(path, params=query, headers=auth_header(cred))
         except httpx.HTTPError as e:
             raise SourceUnavailable(f"酷狗接口连不上（{type(e).__name__}）") from e
         try:
