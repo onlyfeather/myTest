@@ -16,6 +16,9 @@ from .sync import now_ms
 # 最后一个人离开 30 分钟后关闭房间（队列保留在数据库里，下次开房恢复）。
 IDLE_CLOSE_MS = 30 * 60 * 1000
 
+# 给一个连接发一条消息最多等几秒。正常连接是毫秒级；超时说明这个连接卡住了。
+SEND_TIMEOUT_S = 5.0
+
 
 @dataclass(eq=False)
 class Connection:
@@ -39,6 +42,7 @@ class Hub:
         self._clock = clock
         self._rooms: dict[str, LiveRoom] = {}
         self._reaper: asyncio.Task | None = None
+        self._closing: set[asyncio.Task] = set()
 
     # ------------------------------------------------------------ 房间
 
@@ -126,17 +130,31 @@ class Hub:
         await self.broadcast(group_id, {"type": "members", "members": self.members(group_id)})
 
     async def broadcast(self, group_id: str, message: dict[str, Any]) -> None:
+        """同时发给所有人。一个人的连接卡住（手机切后台、网络半断）时不能拖住别人：
+        超时的连接直接关掉，让它重连拿最新状态，而不是留着它、让它错过后面的状态。"""
         live = self._rooms.get(group_id)
         if not live:
             return
-        dead = []
-        for conn in list(live.conns):
-            try:
-                await conn.send(message)
-            except Exception:  # noqa: BLE001 连接已经断了，下面统一清理
-                dead.append(conn)
-        for conn in dead:
-            live.conns.discard(conn)
+        conns = list(live.conns)
+        results = await asyncio.gather(
+            *(asyncio.wait_for(conn.send(message), SEND_TIMEOUT_S) for conn in conns),
+            return_exceptions=True,
+        )
+        for conn, result in zip(conns, results):
+            if isinstance(result, asyncio.TimeoutError):
+                live.conns.discard(conn)
+                self._close_later(conn, 4408, "too slow")
+            elif isinstance(result, BaseException):
+                live.conns.discard(conn)  # 连接已经断了
+
+    def _close_later(self, conn: Connection, code: int, reason: str) -> None:
+        async def run() -> None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(conn.close(code, reason), SEND_TIMEOUT_S)
+
+        task = asyncio.get_running_loop().create_task(run())
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
 
     async def push_state(self, group_id: str) -> None:
         room = self.get(group_id)

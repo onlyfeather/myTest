@@ -124,13 +124,17 @@ async function logout() {
 // ---------------------------------------------------------------- 时钟
 
 let offset = 0; // 服务端时间 - 本地时间
-let samples = [];
+let calibrated = false;
+let samples = []; // { rtt, offset, at }
+const SAMPLE_TTL_MS = 5 * 60 * 1000;
 const serverNow = () => Date.now() + offset;
 
 function ping() { send({ type: 'ping', client_ms: Date.now() }); }
 
+// 连上后连发几次 ping 对时。断线重连、切回页面时不清掉之前的样本：本地和服务端的时差不会因此改变，
+// 清掉以后到第一次 pong 之间只能拿 state 里的服务端时间粗估，会差一个网络延迟；
+// 切后台期间积压的消息更是可能差几十秒，进度就会跳到错的地方。
 function calibrate() {
-  samples = [];
   for (let i = 0; i < 5; i++) setTimeout(ping, i * 260);
 }
 
@@ -138,10 +142,13 @@ function onPong(msg) {
   const now = Date.now();
   const rtt = now - msg.client_ms;
   if (rtt < 0 || rtt > 10000) return;
-  samples.push({ rtt, offset: msg.server_ms - (msg.client_ms + rtt / 2) });
-  if (samples.length > 10) samples.shift();
+  // 太久以前的样本丢掉（系统时间可能被校准过）。
+  samples = samples.filter((x) => now - x.at < SAMPLE_TTL_MS);
+  samples.push({ rtt, offset: msg.server_ms - (msg.client_ms + rtt / 2), at: now });
+  if (samples.length > 20) samples.shift();
   // 往返最短的那次最准（和 NTP 一样）。
   offset = samples.reduce((a, b) => (b.rtt < a.rtt ? b : a)).offset;
+  calibrated = true;
 }
 
 // ---------------------------------------------------------------- 播放
@@ -295,6 +302,12 @@ let ws = null;
 let reconnectDelay = 1000;
 let reconnectTimer = 0;
 let pingTimer = 0;
+// 每 15 秒 ping 一次，服务端都会回 pong。40 秒什么都没收到，说明连接已经死了（手机切后台、换网络时常见，
+// 浏览器却还显示连着）：这时收不到别人的暂停、拖进度，必须重连拿最新状态，不能接着按旧状态放。
+const PING_EVERY_MS = 15000;
+const STALE_MS = 40000;
+let lastSeen = 0;
+let hiddenAt = 0;
 
 const CLOSE_NAMES = {
   1000: '正常关闭',
@@ -303,6 +316,7 @@ const CLOSE_NAMES = {
   1006: '网络中断',
   1011: '服务端出错或心跳超时',
   1012: '服务器重启',
+  4408: '网络太慢，重新连接',
   4503: '凛音暂时不在线',
 };
 
@@ -320,11 +334,16 @@ function connect() {
     s.connected = true;
     s.closeInfo = '';
     reconnectDelay = 1000;
+    lastSeen = Date.now();
     calibrate();
     clearInterval(pingTimer);
-    pingTimer = setInterval(ping, 30000);
+    pingTimer = setInterval(() => {
+      if (stale()) { freshConnect(); return; }
+      ping();
+    }, PING_EVERY_MS);
   };
   sock.onmessage = (e) => {
+    lastSeen = Date.now();
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
     onMessage(msg);
@@ -338,18 +357,38 @@ function connect() {
   };
 }
 
-function reconnectNow() {
+function stale() {
+  return ws && ws.readyState === WebSocket.OPEN && Date.now() - lastSeen > STALE_MS;
+}
+
+// 丢掉旧连接（不管它显示什么状态），马上建新连接。新连接一连上服务端就会发当前状态，进度以它为准。
+function freshConnect() {
   if (s.view !== 'main') return;
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  const old = ws;
+  ws = null; // 旧连接之后的 onclose 不再触发重连
+  clearInterval(pingTimer);
+  if (old) { try { old.close(); } catch { /* 忽略 */ } }
   reconnectDelay = 1000;
   connect();
 }
 
-// 手机切回页面、网络恢复时马上重连，不等退避计时器（后台时计时器可能被推迟）。
+function reconnectNow() {
+  if (s.view !== 'main') return;
+  if (ws && ws.readyState === WebSocket.CONNECTING) return;
+  if (ws && ws.readyState === WebSocket.OPEN && !stale()) return;
+  freshConnect();
+}
+
+// 切回页面：在后台超过 5 秒就重连拿最新状态。后台时浏览器会冻结页面，期间别人的暂停、拖进度、切歌
+// 可能没收到，连接也可能早就死了；靠旧状态接着放就会和大家不一样。
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
-  if (ws && ws.readyState === WebSocket.OPEN) calibrate();
-  else reconnectNow();
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
+  if (!ws || ws.readyState !== WebSocket.OPEN || stale() || (hiddenAt && Date.now() - hiddenAt > 5000)) {
+    freshConnect();
+  } else {
+    calibrate();
+  }
+  hiddenAt = 0;
   syncAudio();
 });
 window.addEventListener('online', reconnectNow);
@@ -374,7 +413,8 @@ function onMessage(msg) {
       s.me = { ...(s.me || {}), qq: msg.qq, name: msg.name, superuser: msg.superuser };
       break;
     case 'state':
-      if (!samples.length) offset = msg.state.server_ms - Date.now();
+      // 只在第一次对时完成前粗估；之后一律用 ping 测出来的时差。
+      if (!calibrated) offset = msg.state.server_ms - Date.now();
       s.state = msg.state;
       applyState();
       break;

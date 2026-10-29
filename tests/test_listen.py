@@ -28,7 +28,8 @@ from mytest.plugins.listen_plugin.bridge import (
     MembershipCache,
     Profile,
 )
-from mytest.plugins.listen_plugin.hub import IDLE_CLOSE_MS, Hub
+from mytest.plugins.listen_plugin import hub as hub_module
+from mytest.plugins.listen_plugin.hub import IDLE_CLOSE_MS, Connection, Hub
 from mytest.plugins.listen_plugin.room import CONTROL_LIMIT, Room, RoomError
 from mytest.plugins.listen_plugin.service import ListenConfig, ListenService
 from mytest.plugins.listen_plugin.sources.base import (
@@ -299,6 +300,39 @@ def test_membership_cache():
 
 
 # ---------------------------------------------------------------- Hub
+
+
+def test_hub_broadcast_not_blocked_by_slow_connection(monkeypatch):
+    monkeypatch.setattr(hub_module, "SEND_TIMEOUT_S", 0.2)
+    hub = Hub(Store(":memory:"))
+    hub.open(GROUP, "1")
+    got: list[dict] = []
+    closed: list[int] = []
+
+    async def fast_send(msg):
+        got.append(msg)
+
+    async def stuck_send(_msg):
+        await asyncio.sleep(60)
+
+    async def close(code, _reason):
+        closed.append(code)
+
+    fast = Connection(Member(qq="1", group_id=GROUP, nickname="A"), False, fast_send, close)
+    slow = Connection(Member(qq="2", group_id=GROUP, nickname="B"), False, stuck_send, close)
+
+    async def run():
+        hub.join(GROUP, slow)
+        hub.join(GROUP, fast)
+        started = time.monotonic()
+        await hub.broadcast(GROUP, {"type": "state"})
+        assert time.monotonic() - started < 1, "a stuck connection must not hold up everyone else"
+        await asyncio.sleep(0.05)
+
+    asyncio.run(run())
+    assert got == [{"type": "state"}]
+    assert hub.online(GROUP) == 1, "the stuck connection is dropped so it reconnects for fresh state"
+    assert closed == [4408]
 
 
 def test_hub_reaps_idle_rooms():
