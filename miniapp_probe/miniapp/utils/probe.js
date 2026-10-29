@@ -17,6 +17,7 @@ let socketOpen = false;
 const pending = []; // 没连上时先攒着，连上后补发
 let bgm = null;
 let mode = 'idle'; // idle | direct | fetch | remote
+let remoteArmed = false; // 测试二：等音乐真正响起来（onPlay）才让服务端开始发指令
 let nextN = 1;
 
 function stamp(t) {
@@ -64,17 +65,38 @@ function state() {
   };
 }
 
+// 连接失败（握手超时、域名校验）时只会触发 onError，不一定有 onClose，所以两处都要安排重连。
+// 同一时间只排一次，失败越多等得越久，最长 15 秒。
+let retryTimer = 0;
+let retryDelay = 2000;
+
+function scheduleReconnect(reason) {
+  socketOpen = false;
+  if (retryTimer) return;
+  log(`${retryDelay / 1000} 秒后重连 WebSocket（${reason}）`);
+  retryTimer = setTimeout(() => {
+    retryTimer = 0;
+    connect();
+  }, retryDelay);
+  retryDelay = Math.min(retryDelay * 2, 15000);
+}
+
 function connect() {
-  socket = api.connectSocket({
+  const sock = api.connectSocket({
     url: `${WS_URL}?c=${CLIENT}`,
-    fail: (e) => log(`WebSocket 连接失败：${e.errMsg}`),
+    fail: (e) => { log(`WebSocket 连接失败：${e.errMsg}`); scheduleReconnect('连接失败'); },
   });
-  socket.onOpen(() => {
+  socket = sock;
+  log('正在连接 WebSocket…');
+  sock.onOpen(() => {
+    if (socket !== sock) return;
+    clearTimeout(openTimer);
     socketOpen = true;
-    log('WebSocket 连上了');
-    while (pending.length) socket.send({ data: pending.shift() });
+    retryDelay = 2000;
+    log(`WebSocket 连上了，补发 ${pending.length} 条`);
+    while (pending.length) sock.send({ data: pending.shift() });
   });
-  socket.onMessage((res) => {
+  sock.onMessage((res) => {
     let msg;
     try { msg = JSON.parse(res.data); } catch (e) { return; }
     if (msg.type === 'tick') {
@@ -83,12 +105,25 @@ function connect() {
       runCommand(msg);
     }
   });
-  socket.onClose((res) => {
-    socketOpen = false;
+  sock.onClose((res) => {
+    if (socket !== sock) return;
+    clearTimeout(openTimer);
     log(`WebSocket 断开 code=${res && res.code}`);
-    setTimeout(connect, 3000);
+    scheduleReconnect('断开');
   });
-  socket.onError((e) => log(`WebSocket 出错：${e && e.errMsg}`));
+  sock.onError((e) => {
+    if (socket !== sock) return;
+    clearTimeout(openTimer);
+    log(`WebSocket 出错：${e && e.errMsg}`);
+    scheduleReconnect('出错');
+  });
+  // 有时既不 onOpen 也不报错，一直卡着：10 秒没连上就放弃这次，重新连。
+  const openTimer = setTimeout(() => {
+    if (socket !== sock || socketOpen) return;
+    log('WebSocket 10 秒没连上，放弃这次重新连');
+    try { sock.close({}); } catch (e) { /* 忽略 */ }
+    scheduleReconnect('超时');
+  }, 10000);
 }
 
 // 测试二：服务端发来的远程控制，执行后马上回报播放器状态。
@@ -132,7 +167,15 @@ function onEnded() {
 
 function start() {
   bgm = api.getBackgroundAudioManager();
-  bgm.onPlay(() => log(`onPlay ${state().src}`));
+  bgm.onPlay(() => {
+    log(`onPlay ${state().src}`);
+    if (remoteArmed) {
+      // 音乐已经在放，小程序切后台不会被挂起，这时再开始计时。
+      remoteArmed = false;
+      send({ type: 'remote_test' });
+      log('音乐已经响了：现在锁屏，服务端 25 秒后开始发指令');
+    }
+  });
   bgm.onPause(() => log(`onPause，位置 ${state().currentTime}s`));
   bgm.onStop(() => log('onStop（系统或用户关闭了播放器）'));
   bgm.onEnded(onEnded);
@@ -143,7 +186,8 @@ function start() {
   // 每 10 秒报一次心跳：后台时 JS 如果被冻住，服务端就会看到这里断档。
   setInterval(() => {
     const s = state();
-    log(`心跳 ${s.paused ? '暂停' : '播放中'} ${s.currentTime}s ${s.src}`);
+    log(`心跳 ${s.paused ? '暂停' : '播放中'} ${s.currentTime}s ${s.src} WS:${socketOpen ? '已连' : '未连'}`);
+    if (!socketOpen && !retryTimer) scheduleReconnect('心跳发现没连上');
   }, 10000);
   connect();
   log(`启动，客户端编号 ${CLIENT}`);
@@ -158,10 +202,22 @@ module.exports = {
   runDirect() { mode = 'direct'; log('== 测试一 A：放完直接换下一首 =='); play(1); },
   runFetch() { mode = 'fetch'; log('== 测试一 B：放完先联网再换 =='); play(1); },
   runRemote() {
+    // 指令全靠 WebSocket 下发，没连上时开始就白测了。
+    if (!socketOpen) {
+      log('测试二没开始：WebSocket 还没连上（正在重连），等日志里出现「WebSocket 连上了」再点，不用连点');
+      return;
+    }
     mode = 'remote';
-    log('== 测试二：远程控制（15 秒内锁屏）==');
+    remoteArmed = true;
+    log('== 测试二：远程控制。等听到声音、日志出现「音乐已经响了」再锁屏 ==');
     play(1, 180);
-    send({ type: 'remote_test' });
   },
-  stop() { mode = 'idle'; bgm.stop(); log('手动停止'); },
+  stop() { mode = 'idle'; remoteArmed = false; bgm.stop(); log('手动停止'); },
+  // 打开调试后不校验合法域名（测试域名没备案，不开就连不上），小程序会自动重启。
+  enableDebug() {
+    api.setEnableDebug({
+      enableDebug: true,
+      fail: (e) => log(`打开调试失败：${e && e.errMsg}`),
+    });
+  },
 };

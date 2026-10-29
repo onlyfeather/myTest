@@ -162,6 +162,45 @@ let loadedRef = null;
 let loadSeq = 0;
 let retries = 0;
 
+// 手机浏览器在后台时，<audio> 一停下来就可能被挂起：之后的取地址、play() 要等回到页面才执行。
+// 所以提前取好下一首的地址，一首放完时在 ended 里直接换上接着放，中间不停。
+// 服务端在这首放完 0.5 秒后也会切到下一首，状态到了以后照常按服务端校正进度。
+const PREFETCH_TTL_MS = 10 * 60 * 1000; // 播放地址最短 20 分钟过期，留出余量
+const PREFETCH_RETRY_MS = 30 * 1000;
+let nextUp = null; // { ref, url, track, at }
+let prefetching = null;
+let prefetchFailed = { ref: null, at: 0 };
+
+async function prefetchNext() {
+  const item = s.queue[0];
+  if (!item) { nextUp = null; return; }
+  const ref = item.track.ref;
+  if (nextUp && nextUp.ref === ref && Date.now() - nextUp.at < PREFETCH_TTL_MS) return;
+  if (prefetching === ref) return;
+  if (prefetchFailed.ref === ref && Date.now() - prefetchFailed.at < PREFETCH_RETRY_MS) return;
+  prefetching = ref;
+  const r = await api('/api/stream?ref=' + encodeURIComponent(ref));
+  prefetching = null;
+  if (!r.ok) { prefetchFailed = { ref, at: Date.now() }; return; }
+  if (s.queue[0] && s.queue[0].track.ref === ref) nextUp = { ref, url: r.url, track: item.track, at: Date.now() };
+}
+
+function playNextNow() {
+  const st = s.state;
+  const next = nextUp;
+  if (!st || st.paused || localPaused || !s.unlocked || !next) return false;
+  if (!s.queue[0] || s.queue[0].track.ref !== next.ref) return false; // 队列变了，等服务端的状态
+  nextUp = null;
+  loadSeq += 1; // 作废还没完成的取地址
+  loadedRef = next.ref;
+  retries = 0;
+  audio.src = next.url;
+  audio.playbackRate = 1;
+  audio.play().catch(() => {});
+  updateMediaSession(next.track);
+  return true;
+}
+
 function expectedMs() {
   const st = s.state;
   if (!st || !st.current) return 0;
@@ -200,11 +239,17 @@ async function applyState() {
   updateMediaSession(track);
   loadLyrics(track);
   syncAudio();
+  prefetchNext();
 }
 
 function syncAudio() {
   const st = s.state;
   if (!st || !st.current || !audio.src || audio.readyState < 1) return;
+  if (loadedRef !== st.current.track.ref) {
+    // 已经提前接上了下一首，服务端的状态还没到：先不按旧那首的进度校正。
+    if (st.paused && !audio.paused) audio.pause();
+    return;
+  }
   const expected = expectedMs();
   const local = audio.currentTime * 1000;
   if (st.paused) {
@@ -232,8 +277,11 @@ function syncAudio() {
 }
 
 audio.addEventListener('loadedmetadata', syncAudio);
-// 在后台时连接可能已经断了：一首放完就马上重连，拿到服务端切好的下一首。
-audio.addEventListener('ended', () => reconnectNow());
+audio.addEventListener('ended', () => {
+  playNextNow();
+  // 在后台时连接可能已经断了：马上重连，拿服务端切好的下一首校正。
+  reconnectNow();
+});
 audio.addEventListener('error', () => {
   // 地址过期或者网络问题：重新取地址，最多 3 次。
   if (!loadedRef || retries >= 3) return;
@@ -418,7 +466,7 @@ function onMessage(msg) {
       s.state = msg.state;
       applyState();
       break;
-    case 'queue': s.queue = msg.queue; break;
+    case 'queue': s.queue = msg.queue; prefetchNext(); break;
     case 'members': s.members = msg.members; break;
     case 'chat':
       s.chat.push(msg);

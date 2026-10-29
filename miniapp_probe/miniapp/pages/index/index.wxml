@@ -1,5 +1,6 @@
 <view class="wrap">
   <view class="hint">客户端编号 {{client}}。点一个测试，然后马上锁屏（或者切到别的 App），等它跑完再回来看日志。</view>
+  <button class="btn" bindtap="enableDebug">先点这里：打开调试（小程序会重启，右下角出现绿色 vConsole 按钮）</button>
   <button class="btn" bindtap="runDirect">测试一 A：放完直接换下一首（15 秒一首）</button>
   <button class="btn" bindtap="runFetch">测试一 B：放完先联网再换（15 秒一首）</button>
   <button class="btn" bindtap="runRemote">测试二：远程暂停 / 播放 / 拖进度 / 换歌（约 90 秒）</button>

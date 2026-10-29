@@ -21,4 +21,5 @@ Page({
   runFetch() { probe.runFetch(); },
   runRemote() { probe.runRemote(); },
   stop() { probe.stop(); },
+  enableDebug() { probe.enableDebug(); },
 });
