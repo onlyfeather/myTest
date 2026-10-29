@@ -1,6 +1,6 @@
 """QQ 音乐（qqmusic-api-python，进程内调用）。
 
-搜索、歌词不需要登录。会员歌取地址时用 bot 的会员账号凭证（WebUI「一起听」里扫码登录）。
+搜索、歌词不需要登录。会员歌取地址时用 bot 的会员账号凭证（WebUI「点歌」里扫码登录）。
 """
 
 from __future__ import annotations

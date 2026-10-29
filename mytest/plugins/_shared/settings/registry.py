@@ -104,7 +104,7 @@ class SettingSection:
     option_providers: dict[str, OptionsProvider] = field(default_factory=dict)
     # 文件槽（比如人设图）：WebUI 里显示上传、预览、删除。
     files: dict[str, FileSlot] = field(default_factory=dict)
-    # 账号面板（比如一起听的 bot 会员账号）：WebUI 里显示登录状态、扫码登录、退出。
+    # 账号面板（比如点歌的 bot 会员账号）：WebUI 里显示登录状态、扫码登录、退出。
     accounts: AccountPanel | None = None
 
     def get_field(self, key: str) -> SettingField:

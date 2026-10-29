@@ -15,15 +15,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from maibot_sdk import (
-    CONFIG_RELOAD_SCOPE_SELF,
-    Field,
-    HookHandler,
-    MaiBotPlugin,
-    PluginConfigBase,
-    Tool,
-)
-from maibot_sdk.types import ErrorPolicy, HookMode, ToolParameterInfo, ToolParamType
+from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 BEIJING = timezone(timedelta(hours=8))
 MAIZONE_API = "internetsb.maizone.send_feed_api"
@@ -60,8 +53,7 @@ class ToolsSection(PluginConfigBase):
     dice: bool = Field(default=True, description="投骰")
     pixiv: bool = Field(default=True, description="Pixiv 搜图和每日推荐")
     qzone: bool = Field(default=True, description="发说说（只有主人能让她发，需要装 Maizone 插件）")
-    music: bool = Field(default=True, description="发歌、推荐歌、一起听（需要 NoneBot 开启一起听）")
-    listen_context: bool = Field(default=True, description="回复前告诉她本群正在一起听什么（她不会主动提，问到才说）")
+    music: bool = Field(default=True, description="发歌、推荐歌（音乐卡片）")
 
 
 class QzoneSection(PluginConfigBase):
@@ -191,7 +183,7 @@ MUSIC_SHARE_DESC = (
 MUSIC_SONG_DESC = "歌名，最好带上歌手，例如「晴天 周杰伦」「Lemon 米津玄師」"
 MUSIC_RECOMMEND_DESC = (
     "给对方推荐歌。对方让你推荐歌、「来首 xx 的歌」、让你帮忙选歌时调用；歌由工具选好并核对存在，你不要自己编歌名。"
-    "如果本群正在一起听，歌会加进一起听的队列；否则以音乐卡片发到聊天里。"
+    "选好的歌以音乐卡片发到聊天里。"
     f"{ACT_IN_CHARACTER}"
 )
 MUSIC_WANT_DESC = (
@@ -199,11 +191,6 @@ MUSIC_WANT_DESC = (
     "例如「安静一点适合睡前的」「周杰伦的老歌」「日语、节奏快」。对方没说具体要求就填「随便」"
 )
 MUSIC_COUNT_DESC = "几首，对方没说就是 1，最多 5"
-LISTEN_STATUS_DESC = (
-    "查看本群一起听的完整情况：正在放的、队列里接下来的、刚放过的、谁在听。对方问「刚才那首是什么」「后面还有什么歌」"
-    "「谁在听」时调用。正在放的歌你本来就知道，只问这个不用调用。"
-)
-LISTEN_MARKER = "【一起听】"
 QZONE_MOOD_DESC = "你现在的心情，两到六个字，例如「有点困」「心情不错」「被雨烦到」。会用在文案和配图的气氛上"
 
 SCENE_DESC = (
@@ -251,10 +238,6 @@ class RinneToolsPlugin(MaiBotPlugin):
     _scheduler_task: asyncio.Task | None = None
     _jobs: set[asyncio.Task]
     _posting: asyncio.Lock
-    def __init__(self) -> None:
-        super().__init__()
-        self._session_groups: dict[str, str] = {}
-        self._listen_cache: dict[str, tuple[float, str]] = {}
 
     async def on_load(self) -> None:
         self._jobs = set()
@@ -561,7 +544,7 @@ class RinneToolsPlugin(MaiBotPlugin):
                        "不要在聊天里写说说的内容。",
         }
 
-    # -------------------------------------------------------- 音乐、一起听
+    # -------------------------------------------------------- 音乐
 
     @Tool(
         "rinne_music_share",
@@ -592,10 +575,6 @@ class RinneToolsPlugin(MaiBotPlugin):
         return await self._call("music_recommend", "music",
                                 {"want": want, "count": count, "recent_chat": recent or None}, kwargs)
 
-    @Tool("rinne_listen_status", brief_description=LISTEN_STATUS_DESC, parameters=[_msg_id_param()], core_tool=True)
-    async def rinne_listen_status(self, **kwargs: Any) -> dict[str, Any]:
-        return await self._call("listen_status", "music", {}, kwargs)
-
     async def _recent_chat(self, stream_id: str, limit: int = 20) -> list[str]:
         """推荐歌时带上群里最近的聊天（只当气氛参考，用户确认过由 MaiBot 带过去，NoneBot 不存）。"""
         try:
@@ -604,62 +583,6 @@ class RinneToolsPlugin(MaiBotPlugin):
             self.ctx.logger.debug("[凛音工具] 读取最近聊天失败: %s", e)
             return []
         return recent_lines(messages, limit)
-
-    @HookHandler("maisaka.replyer.before_request", name="inject_listening", mode=HookMode.BLOCKING,
-                 error_policy=ErrorPolicy.SKIP, timeout_ms=1500)
-    async def inject_listening(self, **kwargs: Any) -> dict[str, Any]:
-        """回复前告诉凛音本群正在一起听什么（约一两句）。不主动提，只在被问起时用得上。"""
-        try:
-            cfg = self._cfg()
-            if not (cfg.plugin.enabled and cfg.tools.music and cfg.tools.listen_context and cfg.plugin.token.strip()):
-                return {"action": "continue"}
-            existing = str(kwargs.get("extra_prompt") or "")
-            if LISTEN_MARKER in existing:
-                return {"action": "continue"}
-            group_id = await self._group_of_session(str(kwargs.get("session_id") or ""),
-                                                    str(kwargs.get("reply_message_id") or ""))
-            if not group_id:
-                return {"action": "continue"}
-            text = await self._listen_context(group_id)
-            if not text:
-                return {"action": "continue"}
-            extra = f"{LISTEN_MARKER}{text}只在有人问起正在听的歌、或者聊到相关话题时再提，不要主动说起。"
-            return {"action": "continue",
-                    "modified_kwargs": {**kwargs, "extra_prompt": f"{existing}\n\n{extra}".strip()}}
-        except Exception as e:
-            self.ctx.logger.warning("[凛音工具] 注入一起听状态失败: %s", e)
-            return {"action": "continue"}
-
-    async def _group_of_session(self, session_id: str, reply_message_id: str) -> str:
-        """回复是在哪个群里：先看缓存，没有就按要回复的那条消息查。"""
-        if session_id in self._session_groups:
-            return self._session_groups[session_id]
-        group_id = ""
-        if reply_message_id:
-            msg = _unwrap(await self._get_message(reply_message_id, session_id))
-            group = (msg.get("message_info") or {}).get("group_info")
-            group_id = str(group.get("group_id") or "").strip() if isinstance(group, dict) else ""
-        if session_id:
-            self._session_groups[session_id] = group_id
-            if len(self._session_groups) > 500:
-                self._session_groups.pop(next(iter(self._session_groups)))
-        return group_id
-
-    async def _listen_context(self, group_id: str) -> str:
-        """问 NoneBot 本群正在听什么。结果缓存 10 秒；超时 1 秒，查不到就不注入，不能拖慢回复。"""
-        hit = self._listen_cache.get(group_id)
-        now = asyncio.get_running_loop().time()
-        if hit and now - hit[0] < 10:
-            return hit[1]
-        # 工具接口要求带 user_id；这里不是某个人发起的，NoneBot 的 listen_context 也不看它，填 bot 自己的占位号
-        body = {"user_id": "10000", "group_id": group_id, "args": {}}
-        try:
-            data = await self._request("listen_context", body, 1.0)
-        except (httpx.HTTPError, ValueError):
-            return ""
-        text = str(data.get("content") or "") if data.get("ok") else ""
-        self._listen_cache[group_id] = (now, text)
-        return text
 
 
 def recent_lines(messages: Any, limit: int = 20) -> list[str]:

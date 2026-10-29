@@ -1,6 +1,0 @@
-.wrap { padding: 24rpx; }
-.hint { color: #8b90a0; margin-bottom: 20rpx; line-height: 1.5; }
-.btn { margin: 0 0 16rpx; background: #262a34; color: #e8e9ed; font-size: 28rpx; text-align: left; }
-.btn.stop { background: #3a2f1a; color: #f0d9a8; }
-.logs { margin-top: 20rpx; font-family: monospace; font-size: 22rpx; }
-.line { padding: 6rpx 0; border-bottom: 1rpx solid #2f3440; word-break: break-all; }

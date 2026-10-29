@@ -1,6 +1,6 @@
-"""一起听 M2：网易云、酷狗音源（用假的 HTTP 响应）、熔断、跨平台换源、歌词、资料卡。
+"""点歌的音源：网易云、酷狗（用假的 HTTP 响应）、熔断、判断是不是同一首歌。
 
-运行：python -m pytest tests/test_listen_sources.py -q
+运行：python -m pytest tests/test_music_sources.py -q
 """
 
 from __future__ import annotations
@@ -11,35 +11,21 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
-from mytest.plugins.listen_plugin.app import create_app
-from mytest.plugins.listen_plugin.service import ListenConfig, ListenService
-from mytest.plugins.listen_plugin.sources.base import (
+from mytest.plugins.music_plugin.sources.base import (
     SourceError,
     SourceUnavailable,
     Stream,
     Track,
     https,
 )
-from mytest.plugins.listen_plugin.sources.kugou import KugouSource
-from mytest.plugins.listen_plugin.sources.netease import NeteaseSource
-from mytest.plugins.listen_plugin.sources.resolver import (
+from mytest.plugins.music_plugin.sources.kugou import KugouSource
+from mytest.plugins.music_plugin.sources.netease import NeteaseSource
+from mytest.plugins.music_plugin.sources.resolver import (
     COOLDOWN,
     FAIL_LIMIT,
     Sources,
     same_song,
-)
-from mytest.plugins.listen_plugin.store import Store
-
-from .test_listen import (
-    GROUP,
-    ORIGIN,
-    SECRET,
-    FakeBridge,
-    FakeSource,
-    login,
-    ws_headers,
 )
 
 
@@ -264,172 +250,47 @@ def test_slow_source_times_out():
         run(go())
 
 
-# ---------------------------------------------------------------- 跨平台
+def test_three_platform_live_search():
+    """三个平台真的都能搜到歌，默认跳过。本地起好 api-enhanced 和 KuGouMusicApi 后：
+    MUSIC_LIVE_NCM=http://127.0.0.1:13000 MUSIC_LIVE_KG=http://127.0.0.1:13001 pytest -k three_platform
+    """
+    import os
 
+    from mytest.plugins.music_plugin.service import MusicService
+    from mytest.plugins.music_plugin.sources.qqmusic import QQMusicSource
 
-VIP_QQ = Track("qq", "0039MnYb0qxYhV", "晴天", "周杰伦", duration_ms=269_000, vip=True)
-FREE_NCM = Track("netease", "186016", "晴天", "周杰伦", duration_ms=269_500)
-LIVE_NCM = Track("netease", "186017", "晴天 (Live)", "周杰伦", duration_ms=269_000)
-VIP_KG = Track("kugou", "B" * 32, "晴天", "周杰伦", duration_ms=269_000, vip=True)
+    ncm_url, kg_url = os.environ.get("MUSIC_LIVE_NCM", ""), os.environ.get("MUSIC_LIVE_KG", "")
+    if not ncm_url or not kg_url:
+        pytest.skip("没有设置 MUSIC_LIVE_NCM / MUSIC_LIVE_KG")
 
+    async def go() -> dict[str, list[str]]:
+        sources = {"qq": QQMusicSource(), "netease": NeteaseSource(ncm_url, timeout=15),
+                   "kugou": KugouSource(kg_url, timeout=15)}
+        service = MusicService(sources)
+        out = {}
+        for keyword in ("晴天 周杰伦", "Lemon 米津玄師", "春日影 MyGO"):
+            results = await service.search_all(keyword, 3)
+            out[keyword] = [f"{r.platform}:{len(r.tracks)}:{r.error}" for r in results]
+        for src in sources.values():
+            await src.close()
+        return out
 
-@pytest.fixture
-def multi():
-    bridge = FakeBridge()
-    bridge.add("1", "房主")
-    bridge.add("2", "群友")
-    qq = FakeSource("qq", [VIP_QQ])
-    ncm = FakeSource("netease", [LIVE_NCM, FREE_NCM])
-    kg = FakeSource("kugou", [VIP_KG])
-    service = ListenService(
-        config=ListenConfig(public_url=ORIGIN, secret=SECRET, allowed_groups=lambda: [GROUP]),
-        bridge=bridge,
-        store=Store(":memory:"),
-        source_map={"qq": qq, "netease": ncm, "kugou": kg},
-    )
-    client = TestClient(create_app(service), base_url=ORIGIN)
-    return service, client, qq, ncm, kg
-
-
-def test_substitute_finds_playable_copy(multi):
-    service, _, _, ncm, _ = multi
-    assert run(service.substitute(VIP_QQ)) == FREE_NCM, "skips the Live version and the VIP kugou copy"
-    ncm.tracks = [LIVE_NCM]
-    assert run(service.substitute(VIP_QQ)) is None
-
-
-def test_platform_list_and_search(multi):
-    service, client, *_ = multi
-    login(client, service, "2")
-    platforms = client.get("/api/platforms").json()["platforms"]
-    assert [p["id"] for p in platforms] == ["qq", "netease", "kugou"]
-    assert all(p["available"] for p in platforms)
-    r = client.get("/api/search", params={"q": "晴天", "platform": "netease"}).json()
-    assert [t["ref"] for t in r["tracks"]] == [LIVE_NCM.ref, FREE_NCM.ref]
-    assert client.get("/api/search", params={"q": "x", "platform": "spotify"}).status_code == 400
-
-
-def until(ws: Any, kind: str) -> dict:
-    for _ in range(20):
-        msg = ws.receive_json()
-        if msg["type"] == kind:
-            return msg
-    raise AssertionError(kind)
-
-
-def test_adding_vip_song_uses_other_platform(multi):
-    service, client, *_ = multi
-    login(client, service, "2")
-    service.hub.open(GROUP, "1")
-    ref = client.get("/api/search", params={"q": "晴天", "platform": "qq"}).json()["tracks"][0]["ref"]
-    with client.websocket_connect("/ws", headers=ws_headers(client)) as ws:
-        until(ws, "members")
-        ws.send_json({"type": "queue", "op": "add", "ref": ref})
-        chat = until(ws, "chat")
-        assert "换成网易云音乐" in chat["text"]
-        state = until(ws, "state")["state"]
-        assert state["current"]["track"]["ref"] == FREE_NCM.ref
-
-
-def test_playback_failure_switches_platform(multi):
-    service, client, qq, ncm, _ = multi
-    login(client, service, "2")
-    free_qq = Track("qq", "0001OKOk2tCZb8", "晴天", "周杰伦", duration_ms=269_000)
-    service.remember([free_qq])
-    room, _ = service.hub.open(GROUP, "1")
-    room.add(free_qq, "2", "群友")
-    room.play("2", service.clock())
-    qq.broken.add(free_qq.id)
-
-    first = client.get("/api/stream", params={"ref": free_qq.ref})
-    assert first.status_code == 502
-    assert room.current is not None and room.current.track == FREE_NCM
-    # 另一个听众晚一步报同一首的错：旧的已经不在队列里了，不会再换一次
-    late = client.get("/api/stream", params={"ref": free_qq.ref})
-    assert late.status_code == 404
-    assert room.current.track == FREE_NCM
-    assert room.current.added_by == "2", "keeps who requested it"
-    r = client.get("/api/stream", params={"ref": FREE_NCM.ref}).json()
-    assert r["url"] == f"https://cdn.example/netease/{FREE_NCM.id}.mp3"
-
-
-# ---------------------------------------------------------------- 歌词、资料卡
-
-
-def test_concurrent_failures_switch_once(multi):
-    """多个听众同时报同一首放不了：只换一次源。直接调用服务端的处理函数，不经过 TestClient（它不适合并发）。"""
-    service, _, qq, ncm, _ = multi
-    free_qq = Track("qq", "0001OKOk2tCZb8", "晴天", "周杰伦", duration_ms=269_000)
-    room, _ = service.hub.open(GROUP, "1")
-    room.add(free_qq, "2", "群友")
-    room.play("2", service.clock())
-    searches = []
-    original = ncm.search
-
-    async def slow_search(keyword: str, limit: int = 20) -> list[Track]:
-        searches.append(keyword)
-        await asyncio.sleep(0.05)
-        return await original(keyword, limit)
-
-    ncm.search = slow_search  # type: ignore[method-assign]
-    app = create_app(service)
-    handler = app.state.handle_unplayable
-
-    async def go():
-        await asyncio.gather(*(handler(GROUP, free_qq, "下架了") for _ in range(3)))
-
-    run(go())
-    assert room.current is not None and room.current.track == FREE_NCM
-    assert len(searches) == 1, "the lock lets only one listener trigger the fallback"
-    assert [t for t in room.history] == [], "replacement is not counted as a separate play"
-
-
-def test_lyrics_endpoint_and_cache(multi):
-    service, client, _, ncm, _ = multi
-    login(client, service, "2")
-    client.get("/api/search", params={"q": "晴天", "platform": "netease"})
-    calls = []
-    original = ncm.lyrics
-
-    async def counting(track: Track) -> tuple[str, str]:
-        calls.append(track.ref)
-        return await original(track)
-
-    ncm.lyrics = counting  # type: ignore[method-assign]
-    r = client.get("/api/lyrics", params={"ref": FREE_NCM.ref}).json()
-    assert r["lrc"].startswith("[00:01.00]晴天") and r["trans"] == "[00:01.00]translated"
-    client.get("/api/lyrics", params={"ref": FREE_NCM.ref})
-    assert calls == [FREE_NCM.ref], "cached"
-    assert client.get("/api/lyrics", params={"ref": "qq:neverseen00"}).status_code == 404
-
-
-def test_profile_only_for_group_members(multi):
-    service, client, *_ = multi
-    login(client, service, "2")
-    room, _ = service.hub.open(GROUP, "1")
-    service.remember([FREE_NCM])
-    room.add(FREE_NCM, "1", "房主")
-    p = client.get("/api/members/1").json()
-    assert p["name"] == "房主" and p["signature"] == "1 的签名" and p["qq_level"] == 12
-    assert p["in_queue"] == 1 and not p["playing_theirs"] and not p["online"]
-    room.play("1", service.clock())
-    p = client.get("/api/members/1").json()
-    assert p["in_queue"] == 0 and p["playing_theirs"], "the playing song isn't counted as queued"
-    assert client.get("/api/members/404").status_code == 404, "not in the group"
-    assert client.get("/api/members/abc").status_code == 404
-    client.cookies.clear()
-    assert client.get("/api/members/1").status_code == 401
+    result = run(go())
+    print(json.dumps(result, ensure_ascii=False))
+    for rows in result.values():
+        counts = {row.split(":")[0]: int(row.split(":")[1]) for row in rows}
+        assert set(counts) == {"qq", "netease", "kugou"} and all(counts.values()), rows
 
 
 def test_live_services_contract():
     """真实接口的冒烟测试，默认跳过。本地起好 api-enhanced 和 KuGouMusicApi 后：
-    LISTEN_LIVE_NCM=http://127.0.0.1:13000 LISTEN_LIVE_KG=http://127.0.0.1:13001 pytest -k live
+    MUSIC_LIVE_NCM=http://127.0.0.1:13000 MUSIC_LIVE_KG=http://127.0.0.1:13001 pytest -k live
     """
     import os
 
-    ncm_url, kg_url = os.environ.get("LISTEN_LIVE_NCM", ""), os.environ.get("LISTEN_LIVE_KG", "")
+    ncm_url, kg_url = os.environ.get("MUSIC_LIVE_NCM", ""), os.environ.get("MUSIC_LIVE_KG", "")
     if not ncm_url or not kg_url:
-        pytest.skip("没有设置 LISTEN_LIVE_NCM / LISTEN_LIVE_KG")
+        pytest.skip("没有设置 MUSIC_LIVE_NCM / MUSIC_LIVE_KG")
 
     async def go() -> dict:
         ncm, kg = NeteaseSource(ncm_url, timeout=15), KugouSource(kg_url, timeout=15)

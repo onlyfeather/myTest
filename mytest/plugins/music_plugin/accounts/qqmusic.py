@@ -166,13 +166,13 @@ class QQMusicAccounts:
             async with self._client() as client:
                 qr = await client.login.get_qrcode(login_type)
         except Exception as e:
-            logger.opt(exception=e).warning("[一起听] QQ 音乐二维码生成失败")
+            logger.opt(exception=e).warning("[点歌] QQ 音乐二维码生成失败")
             raise AccountError(f"QQ 音乐二维码生成失败（{type(e).__name__}）") from e
         sid = secrets.token_urlsafe(16)
         image = f"data:{qr.mimetype or 'image/png'};base64,{base64.b64encode(qr.data).decode()}"
         if login_type == QRLoginType.MOBILE:
             scan = _AppScan(time.monotonic())
-            scan.task = asyncio.create_task(self._watch_app(qr, scan), name="listen-qqmusic-app-qr")
+            scan.task = asyncio.create_task(self._watch_app(qr, scan), name="music-qqmusic-app-qr")
             self._app[sid] = scan
             hint = "打开 QQ 音乐 App，用首页的扫一扫扫码"
         else:
@@ -209,7 +209,7 @@ class QQMusicAccounts:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.opt(exception=e).warning("[一起听] QQ 音乐 App 扫码出错")
+            logger.opt(exception=e).warning("[点歌] QQ 音乐 App 扫码出错")
             scan.error = _login_error(e)
 
     async def qr_poll(self, session: dict[str, Any]) -> QrState:
@@ -243,7 +243,7 @@ class QQMusicAccounts:
             async with self._client() as client:
                 result = await client.login.check_qrcode(hit[1])
         except Exception as e:
-            logger.opt(exception=e).warning("[一起听] QQ 音乐扫码状态检查出错")
+            logger.opt(exception=e).warning("[点歌] QQ 音乐扫码状态检查出错")
             self._qr.pop(sid, None)
             raise AccountError(_login_error(e)) from e
         status = {
@@ -280,7 +280,7 @@ class QQMusicAccounts:
         except Exception as e:
             if self._expired(e):
                 raise CredentialExpired("QQ 音乐登录已经失效，需要重新扫码") from e
-            logger.opt(exception=e).warning("[一起听] QQ 音乐读取账号信息出错")
+            logger.opt(exception=e).warning("[点歌] QQ 音乐读取账号信息出错")
             raise AccountError(f"QQ 音乐接口出错（{type(e).__name__}）") from e
         ident = vip_info.identity
         vip = bool(ident.vip or ident.huge_vip or ident.eight or ident.twelve)

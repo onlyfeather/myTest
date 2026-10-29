@@ -1,9 +1,8 @@
 """凛音推荐歌：LLM 按要求选歌名，再到平台搜索核对，搜不到的（编出来的）丢掉。
 
-参考的优先级写进提示词（DESIGN.md 第 11 节，用户确认过）：
+参考的优先级写进提示词（用户确认过）：
 1. 提问人的要求是硬性条件
-2. 要求没限定的部分才参考：群里最近的聊天、本群一起听放过的歌、提问人自己的歌单
-3. 冲突时按要求来；不推本群最近放过的歌
+2. 要求没限定的部分才参考群里最近的聊天，冲突时按要求来
 """
 
 from __future__ import annotations
@@ -31,12 +30,10 @@ SYSTEM_PROMPT = """你是选歌助手，替一个叫白鸟凛音的角色给群�
 
 选歌规则，按优先级：
 1. 「要求」是硬性条件：曲风、心情、歌手、语言、年代、场景、「像某首歌那样」，都必须满足。
-2. 要求里没限定的部分，才参考「群里最近在聊」「最近一起听放过」「提问人的歌单」，用来贴合气氛和口味。
-   这三样只是参考，不要喧宾夺主；和要求冲突时一律按要求来。
-3. 不要选「最近一起听放过」里的歌。
-4. 只选真实存在、能在 QQ 音乐 / 网易云 / 酷狗搜到的歌。歌名和歌手用原文（日文歌写日文，英文歌写英文）。
+2. 要求里没限定的部分，才参考「群里最近在聊」，用来贴合气氛。这只是参考，和要求冲突时一律按要求来。
+3. 只选真实存在、能在 QQ 音乐 / 网易云 / 酷狗搜到的歌。歌名和歌手用原文（日文歌写日文，英文歌写英文）。
    不确定是否存在的不要写。
-5. 歌手写主唱，有多位时只写第一位。不要写翻唱版、Live 版，除非要求里明确要。"""
+4. 歌手写主唱，有多位时只写第一位。不要写翻唱版、Live 版，除非要求里明确要。"""
 
 
 @dataclass
@@ -44,18 +41,12 @@ class RecommendRequest:
     want: str  # 提问人的要求，例如「来首安静的」「周杰伦的老歌」
     count: int = 1
     chat: list[str] = field(default_factory=list)  # 群里最近的聊天（MaiBot 带过来）
-    played: list[str] = field(default_factory=list)  # 本群一起听最近放过的「歌名 - 歌手」
-    taste: list[str] = field(default_factory=list)  # 提问人自己的喜欢的音乐和歌单
 
 
 def build_prompt(req: RecommendRequest, n: int) -> str:
     parts = [f"要求：{req.want.strip() or '随便来点好听的'}", f"选 {n} 首。"]
     if req.chat:
         parts.append("群里最近在聊（仅供参考气氛）：\n" + "\n".join(f"- {line[:120]}" for line in req.chat[-20:]))
-    if req.played:
-        parts.append("最近一起听放过（不要选这些）：\n" + "\n".join(f"- {s}" for s in req.played[-50:]))
-    if req.taste:
-        parts.append("提问人的歌单（仅供参考口味）：\n" + "\n".join(f"- {s}" for s in req.taste[:30]))
     return "\n\n".join(parts)
 
 
@@ -129,7 +120,6 @@ async def recommend(
     found: list[Track] = []
     seen: set[str] = set()
     rejected: list[str] = []
-    played = {normalize(s.split(" - ")[0]) for s in req.played}
     order = [p for p in platforms if p in sources and sources.available(p)]
     if not order:
         raise ServiceError("音乐平台暂时都不可用")
@@ -151,16 +141,13 @@ async def recommend(
         songs = parse_songs(reply)
         if songs is None:
             last_problem = "选歌结果格式不对"
-            logger.info("[一起听] 推荐：格式不对，重试。原文：{}", (reply or "")[:200])
+            logger.info("[点歌] 推荐：格式不对，重试。原文：{}", (reply or "")[:200])
             continue
         for title, artist in songs:
             key = normalize(title) + "|" + normalize(artist)
             if key in seen:
                 continue
             seen.add(key)
-            if normalize(title) in played:
-                rejected.append(f"{title} - {artist}（最近放过）")
-                continue
             track = await _verify(title, artist, sources, order, playable)
             if track is None:
                 rejected.append(f"{title} - {artist}")

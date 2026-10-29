@@ -1,6 +1,6 @@
-"""一起听 M4：凛音的推荐、发歌、一起听状态，以及 MaiBot 插件的注入钩子。
+"""点歌：凛音的推荐、发歌工具，以及 MaiBot 插件的音乐工具。
 
-运行：python -m pytest tests/test_listen_rinne.py -q
+运行：python -m pytest tests/test_music_rinne.py -q
 （MaiBot 那部分需要 maibot-plugin-sdk，没装时跳过）
 """
 
@@ -13,23 +13,23 @@ from typing import Any
 
 import pytest
 
-from mytest.plugins.listen_plugin.card import CARD_TYPE, build_card, jump_url
-from mytest.plugins.listen_plugin.recommend import (
+from mytest.plugins.music_plugin.card import CARD_TYPE, build_card, jump_url
+from mytest.plugins.music_plugin.recommend import (
     RecommendRequest,
     build_prompt,
     parse_songs,
     pick_match,
     recommend,
 )
-from mytest.plugins.listen_plugin.service import ListenConfig, ListenService
-from mytest.plugins.listen_plugin.sources.base import SourceError, Stream, Track
-from mytest.plugins.listen_plugin.sources.resolver import Sources
-from mytest.plugins.listen_plugin.store import Store
+from mytest.plugins.music_plugin.service import MusicService
+from mytest.plugins.music_plugin.sources.base import SourceError, Stream, Track
+from mytest.plugins.music_plugin.sources.resolver import Sources
 from mytest.plugins.tools_api_plugin import tools as tools_mod
 from mytest.plugins.tools_api_plugin.tools import TOOLS, ToolContext, ToolError
 
-from .test_listen import GROUP, ORIGIN, SECRET, FakeBridge
 from .test_tools import _load_rinne_tools
+
+GROUP = "100001"
 
 
 def run(coro: Any) -> Any:
@@ -83,14 +83,13 @@ def test_pick_match_rejects_wrong_versions_and_artists():
     assert pick_match("Lemon", "米津玄師", [Track("netease", "1", "Lemon (Original)", "米津玄師")]) is not None
 
 
-def test_prompt_puts_request_first_and_lists_played():
-    req = RecommendRequest(want="安静一点适合睡前的", chat=["A：好困"], played=["晴天 - 周杰伦"], taste=["Lemon - 米津玄師"])
-    prompt = build_prompt(req, 2)
+def test_prompt_puts_request_first():
+    prompt = build_prompt(RecommendRequest(want="安静一点适合睡前的", chat=["A：好困"]), 2)
     assert prompt.startswith("要求：安静一点适合睡前的")
-    assert "不要选这些" in prompt and "晴天 - 周杰伦" in prompt
-    assert "仅供参考" in prompt
+    assert "仅供参考" in prompt and "A：好困" in prompt
     empty = build_prompt(RecommendRequest(want=""), 1)
     assert "随便" in empty and "群里" not in empty
+    assert "一起听" not in prompt
 
 
 def fake_llm(replies: list[str]):
@@ -121,14 +120,6 @@ def test_recommend_prefers_playable_copy():
     chat, _ = fake_llm([json.dumps({"songs": [{"title": "晴天", "artist": "周杰伦"}]})])
     found = run(recommend(RecommendRequest(want="周杰伦"), sources, playable=lambda t: not t.vip, chat=chat))
     assert found == [free_qingtian], "QQ copy is VIP, NetEase copy is free"
-
-
-def test_recommend_skips_recently_played():
-    sources = Sources({"netease": Catalog("netease", [LEMON])})
-    chat, calls = fake_llm([json.dumps({"songs": [{"title": "Lemon", "artist": "米津玄師"}]})] * 3)
-    found = run(recommend(RecommendRequest(want="x", played=["Lemon - 米津玄師"]), sources,
-                          playable=lambda t: True, chat=chat))
-    assert found == [] and len(calls) == 3
 
 
 def test_recommend_bad_json_three_times_raises():
@@ -167,17 +158,14 @@ def test_card_fields():
 
 
 @pytest.fixture
-def listen(monkeypatch):
-    """装一个假的一起听服务给 tools_api_plugin 用，并拦下发到 QQ 的消息。"""
-    bridge = FakeBridge()
-    bridge.add("1", "房主")
+def music(monkeypatch):
+    """装一个假的点歌服务给 tools_api_plugin 用，并拦下发到 QQ 的消息。"""
     free_qingtian = Track("netease", "186016", "晴天", "周杰伦", duration_ms=269_000)
-    service = ListenService(
-        config=ListenConfig(public_url=ORIGIN, secret=SECRET, allowed_groups=lambda: [GROUP]),
-        bridge=bridge, store=Store(":memory:"),
-        source_map={"qq": Catalog("qq", [QINGTIAN, QINGTIAN_LIVE]), "netease": Catalog("netease", [LEMON, free_qingtian])},
-    )
-    monkeypatch.setattr(tools_mod, "_listen", lambda: service)
+    service = MusicService({
+        "qq": Catalog("qq", [QINGTIAN, QINGTIAN_LIVE]),
+        "netease": Catalog("netease", [LEMON, free_qingtian]),
+    })
+    monkeypatch.setattr(tools_mod, "_music", lambda: service)
     sent: list[Any] = []
 
     async def fake_send(ctx, message, *, quote=False):
@@ -188,7 +176,7 @@ def listen(monkeypatch):
 
 
 def ctx(group: str | None = GROUP) -> ToolContext:
-    return ToolContext(user_id="1", group_id=group, user_name="房主")
+    return ToolContext(user_id="1", group_id=group, user_name="千树")
 
 
 async def settle() -> None:
@@ -196,35 +184,12 @@ async def settle() -> None:
         await asyncio.sleep(0)
 
 
-def test_listen_context_only_when_playing(listen):
-    service, _ = listen
-    assert run(TOOLS["listen_context"].run(ctx(), {}))["content"] == ""
-    room, _ = service.hub.open(GROUP, "1")
-    assert run(TOOLS["listen_context"].run(ctx(), {}))["content"] == "", "room open but nothing playing"
-    room.add(LEMON, "1", "房主")
-    room.add(QINGTIAN_LIVE, "1", "房主")
-    room.play("1", service.clock())
-    text = run(TOOLS["listen_context"].run(ctx(), {}))["content"]
-    assert text.startswith("本群正在一起听：Lemon - 米津玄師（0:00/4:15，房主点的）")
-    assert "接下来：晴天 (Live) - 周杰伦" in text
-    assert run(TOOLS["listen_context"].run(ctx("999999"), {}))["content"] == "", "not a whitelisted group"
+def test_listen_tools_are_gone():
+    assert "listen_context" not in TOOLS and "listen_status" not in TOOLS
 
 
-def test_listen_status(listen):
-    service, _ = listen
-    assert "没有一起听" in run(TOOLS["listen_status"].run(ctx(), {}))["content"]
-    room, _ = service.hub.open(GROUP, "1")
-    room.add(LEMON, "1", "房主")
-    room.play("1", service.clock())
-    room.add(QINGTIAN_LIVE, "1", "房主")
-    out = run(TOOLS["listen_status"].run(ctx(), {}))["content"]
-    assert "正在放：Lemon" in out and "接下来：晴天 (Live)" in out
-    with pytest.raises(ToolError):
-        run(TOOLS["listen_status"].run(ctx("999999"), {}))
-
-
-def test_music_share_sends_card(listen):
-    _, sent = listen
+def test_music_share_sends_card(music):
+    _, sent = music
 
     async def go():
         result = await TOOLS["music_share"].run(ctx(), {"song": "Lemon 米津玄師"})
@@ -243,9 +208,9 @@ def test_music_share_sends_card(listen):
         run(TOOLS["music_share"].run(ctx(None), {"song": "不存在的歌"}))
 
 
-def test_music_share_prefers_original_and_playable(listen):
+def test_music_share_prefers_original_and_playable(music):
     """QQ 上有会员原版和免费 Live 版，网易云有免费原版：发网易云的原版。"""
-    _, sent = listen
+    _, sent = music
 
     async def go():
         result = await TOOLS["music_share"].run(ctx(), {"song": "晴天"})
@@ -262,9 +227,9 @@ def test_music_share_prefers_original_and_playable(listen):
     assert "(Live)" in run(live())["content"], "asking for Live gets the Live version"
 
 
-def test_music_share_never_swaps_in_a_cover(listen):
+def test_music_share_never_swaps_in_a_cover(music):
     """原曲只有会员版、别的平台只有翻唱的同名歌：发原曲（图文卡片，点开跳原曲），不发翻唱。"""
-    service, sent = listen
+    service, sent = music
     cover = Track("netease", "2652820720", "晴天", "Lucky小爱", duration_ms=278_000)
     service.source_map["netease"].tracks = [cover]  # type: ignore[attr-defined]
 
@@ -278,8 +243,8 @@ def test_music_share_never_swaps_in_a_cover(listen):
     assert data["type"] == "qq" and "audio" not in data, "VIP without an account: no audio, jumps to QQ Music"
 
 
-def test_card_falls_back_to_text(listen, monkeypatch):
-    _, sent = listen
+def test_card_falls_back_to_text(music, monkeypatch):
+    _, sent = music
     calls = []
 
     async def flaky_send(ctx, message, *, quote=False):
@@ -300,14 +265,14 @@ def test_card_falls_back_to_text(listen, monkeypatch):
 
 
 def fake_recommender(monkeypatch, songs: list[tuple[str, str]]):
-    from mytest.plugins.listen_plugin import recommend as rec_mod
+    from mytest.plugins.music_plugin import recommend as rec_mod
 
     async def chat(messages):
         return json.dumps({"songs": [{"title": t, "artist": a} for t, a in songs]})
 
     original = rec_mod.recommend
 
-    async def patched(req, sources, *, playable, chat_=None, **kw):
+    async def patched(req, sources, *, playable, **kw):
         patched.req = req  # type: ignore[attr-defined]
         return await original(req, sources, playable=playable, chat=chat)
 
@@ -315,53 +280,30 @@ def fake_recommender(monkeypatch, songs: list[tuple[str, str]]):
     return patched
 
 
-def test_recommend_adds_to_room_when_listening(listen, monkeypatch):
-    service, sent = listen
+def test_recommend_sends_cards(music, monkeypatch):
+    _, sent = music
     patched = fake_recommender(monkeypatch, [("Lemon", "米津玄師")])
-    room, _ = service.hub.open(GROUP, "1")
-    room.add(QINGTIAN_LIVE, "1", "房主")
-    room.play("1", service.clock())
-    room.next("1", service.clock() + 1)  # 晴天 (Live) 进历史
 
     async def go():
-        return await TOOLS["music_recommend"].run(ctx(), {"want": "日语的", "recent_chat": ["A：困了", 3]})
-
-    result = run(go())
-    assert "加进本群一起听的队列" in result["content"]
-    assert room.current is not None and room.current.track == LEMON, "empty room starts playing it"
-    assert room.current.added_by_name == "凛音"
-    assert not sent, "no card when it went into the room"
-    assert patched.req.want == "日语的" and patched.req.chat == ["A：困了"], "non-string chat lines are dropped"
-    assert "晴天 (Live) - 周杰伦" in patched.req.played
-
-
-def test_recommend_sends_card_without_room(listen, monkeypatch):
-    _, sent = listen
-    fake_recommender(monkeypatch, [("Lemon", "米津玄師")])
-
-    async def go():
-        result = await TOOLS["music_recommend"].run(ctx(None), {"want": "随便"})
+        result = await TOOLS["music_recommend"].run(ctx(), {"want": "日语的", "recent_chat": ["A：困了", 3]})
         await settle()
         return result
 
     result = run(go())
     assert "卡片马上发出去" in result["content"]
-    assert sent and sent[-1][0].type == "music"
+    assert sent and sent[-1][0].type == "music" and sent[-1][0].data["title"] == "Lemon"
+    assert patched.req.want == "日语的" and patched.req.chat == ["A：困了"], "non-string chat lines are dropped"
 
 
-def test_recommend_vip_only_in_room_is_rejected(listen, monkeypatch):
-    service, _ = listen
-    fake_recommender(monkeypatch, [("晴天", "周杰伦")])
-    service.source_map["netease"].tracks = [LEMON]  # type: ignore[attr-defined]  去掉网易云的免费晴天
-    service.hub.open(GROUP, "1")
-    with pytest.raises(ToolError, match="会员"):
-        run(TOOLS["music_recommend"].run(ctx(), {"want": "周杰伦"}))
+def test_recommend_nothing_found(music, monkeypatch):
+    fake_recommender(monkeypatch, [FAKE_SONG])
+    with pytest.raises(ToolError, match="没在平台上找到"):
+        run(TOOLS["music_recommend"].run(ctx(), {"want": "x"}))
 
 
-def test_tools_without_listen(monkeypatch):
-    monkeypatch.setattr(tools_mod, "_listen", lambda: None)
-    assert run(TOOLS["listen_context"].run(ctx(), {}))["content"] == ""
-    for name, args in (("music_share", {"song": "x"}), ("music_recommend", {"want": "x"}), ("listen_status", {})):
+def test_tools_without_music(monkeypatch):
+    monkeypatch.setattr(tools_mod, "_music", lambda: None)
+    for name, args in (("music_share", {"song": "x"}), ("music_recommend", {"want": "x"})):
         with pytest.raises(ToolError, match="没有开启"):
             run(TOOLS[name].run(ctx(), args))
 
@@ -372,7 +314,6 @@ def test_tools_without_listen(monkeypatch):
 def maibot_plugin(responses: dict[str, Any], messages: dict[str, Any] | None = None, recent: Any = None):
     mod = _load_rinne_tools()
     plugin = mod.RinneToolsPlugin()
-    logs: list[str] = []
     requests: list[tuple[str, dict, float]] = []
 
     async def get_by_id(message_id, *, stream_id=""):
@@ -381,8 +322,7 @@ def maibot_plugin(responses: dict[str, Any], messages: dict[str, Any] | None = N
     async def get_recent(chat_id, limit=20):
         return recent or []
 
-    logger = SimpleNamespace(info=lambda *a: logs.append(a[0] % a[1:]), warning=lambda *a: logs.append(a[0] % a[1:]),
-                             debug=lambda *a: None)
+    logger = SimpleNamespace(info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None)
     plugin._set_context(SimpleNamespace(message=SimpleNamespace(get_by_id=get_by_id, get_recent=get_recent),
                                         logger=logger))
     cfg = mod.RinneToolsConfig()
@@ -397,47 +337,11 @@ def maibot_plugin(responses: dict[str, Any], messages: dict[str, Any] | None = N
         return reply or {"ok": True, "content": ""}
 
     plugin._request = request
-    return mod, plugin, cfg, requests, logs
+    return mod, plugin, cfg, requests
 
 
 GROUP_MSG = {"message_id": "555", "message_info": {"user_info": {"user_id": "42", "user_cardname": "千树"},
                                                    "group_info": {"group_id": GROUP}}, "raw_message": []}
-
-
-def test_maibot_injects_listening_context():
-    pytest.importorskip("maibot_sdk")
-    mod, plugin, cfg, requests, _ = maibot_plugin(
-        {"listen_context": {"ok": True, "content": "本群正在一起听：Lemon - 米津玄師（1:00/4:15）。"}},
-        {"555": GROUP_MSG},
-    )
-    kwargs = {"session_id": "s1", "reply_message_id": "555", "extra_prompt": "【好感度插件】……"}
-    out = run(plugin.inject_listening(**kwargs))
-    extra = out["modified_kwargs"]["extra_prompt"]
-    assert extra.startswith("【好感度插件】……") and "【一起听】本群正在一起听：Lemon" in extra
-    assert "不要主动说起" in extra
-    assert requests[0][0] == "listen_context" and requests[0][1]["group_id"] == GROUP and requests[0][2] == 1.0
-    assert kwargs["extra_prompt"] == "【好感度插件】……", "caller's kwargs are not modified in place"
-    again = run(plugin.inject_listening(**out["modified_kwargs"]))
-    assert "modified_kwargs" not in again, "already injected"
-    run(plugin.inject_listening(session_id="s1", reply_message_id="555", extra_prompt=""))
-    assert len(requests) == 1, "cached for 10 seconds, session → group also cached"
-
-    cfg.tools.listen_context = False
-    assert "modified_kwargs" not in run(plugin.inject_listening(session_id="s1", reply_message_id="555"))
-
-
-def test_maibot_injection_never_breaks_replies():
-    pytest.importorskip("maibot_sdk")
-    import httpx
-
-    _, plugin, _, _, _ = maibot_plugin({"listen_context": httpx.ConnectTimeout("slow")}, {"555": GROUP_MSG})
-    assert run(plugin.inject_listening(session_id="s1", reply_message_id="555")) == {"action": "continue"}
-    private = {"555": {**GROUP_MSG, "message_info": {"user_info": {"user_id": "42"}}}}
-    _, plugin2, _, requests, _ = maibot_plugin({}, private)
-    assert run(plugin2.inject_listening(session_id="p1", reply_message_id="555")) == {"action": "continue"}
-    assert not requests, "private chats never ask NoneBot"
-    _, plugin3, _, _, _ = maibot_plugin({"listen_context": {"ok": True, "content": ""}}, {"555": GROUP_MSG})
-    assert "modified_kwargs" not in run(plugin3.inject_listening(session_id="s1", reply_message_id="555"))
 
 
 def test_maibot_recommend_sends_recent_chat():
@@ -447,10 +351,10 @@ def test_maibot_recommend_sends_recent_chat():
         {"message_info": {"user_info": {"user_nickname": "乙"}}, "processed_plain_text": ""},
         {"message": {"message_info": {"user_info": {"user_nickname": "丙"}}, "processed_plain_text": "想听点安静的"}},
     ]
-    _, plugin, _, requests, _ = maibot_plugin({"music_recommend": {"ok": True, "content": "已经加进队列"}},
-                                              {"555": GROUP_MSG}, recent)
+    _, plugin, _, requests = maibot_plugin({"music_recommend": {"ok": True, "content": "选好了"}},
+                                           {"555": GROUP_MSG}, recent)
     result = run(plugin.rinne_music_recommend(want="安静的", msg_id="555", stream_id="s1", group_id=GROUP))
-    assert result == {"success": True, "content": "已经加进队列"}
+    assert result == {"success": True, "content": "选好了"}
     tool, body, _ = requests[0]
     assert tool == "music_recommend" and body["user_id"] == "42"
     assert body["args"] == {"want": "安静的", "count": 1, "recent_chat": ["甲：今天好累", "丙：想听点安静的"]}
@@ -458,20 +362,19 @@ def test_maibot_recommend_sends_recent_chat():
 
 def test_maibot_music_switch():
     pytest.importorskip("maibot_sdk")
-    _, plugin, cfg, requests, _ = maibot_plugin({}, {"555": GROUP_MSG})
+    _, plugin, cfg, requests = maibot_plugin({}, {"555": GROUP_MSG})
     cfg.tools.music = False
     result = run(plugin.rinne_music_share(song="晴天", msg_id="555", stream_id="s1"))
     assert result["success"] is False and not requests
-    assert "modified_kwargs" not in run(plugin.inject_listening(session_id="s1", reply_message_id="555"))
 
 
-def test_maibot_hook_is_declared():
+def test_maibot_music_tools_declared_and_listen_gone():
     pytest.importorskip("maibot_sdk")
     mod = _load_rinne_tools()
     from maibot_sdk.components import collect_components
 
     comps = collect_components(mod.RinneToolsPlugin())
     text = json.dumps(comps, ensure_ascii=False, default=str)
-    for name in ("rinne_music_share", "rinne_music_recommend", "rinne_listen_status", "inject_listening",
-                 "maisaka.replyer.before_request"):
-        assert name in text, name
+    assert "rinne_music_share" in text and "rinne_music_recommend" in text
+    for gone in ("rinne_listen_status", "inject_listening", "maisaka.replyer.before_request"):
+        assert gone not in text, gone

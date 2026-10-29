@@ -1,7 +1,7 @@
 """平台登录凭证的加密保存（AES-256-GCM）。
 
-LISTEN_CREDENTIAL_KEY=32 字节的 base64        # 生成：python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
-LISTEN_CREDENTIAL_KEY_OLD=上一把密钥           # 换密钥时临时填，后台会把旧密文逐条重新加密
+MUSIC_CREDENTIAL_KEY=32 字节的 base64         # 生成：python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
+MUSIC_CREDENTIAL_KEY_OLD=上一把密钥            # 换密钥时临时填，后台会把旧密文逐条重新加密
 
 - 每条凭证用随机 12 字节 nonce。
 - 附加数据（AAD）是 owner:platform:key_id：把别人的密文挪到自己名下、或者换到别的平台，解密都会失败。
@@ -32,9 +32,9 @@ def parse_key(text: str) -> bytes:
     try:
         key = base64.b64decode(text.strip(), validate=True)
     except (binascii.Error, ValueError):
-        raise CryptoError("LISTEN_CREDENTIAL_KEY 不是合法的 base64") from None
+        raise CryptoError("MUSIC_CREDENTIAL_KEY 不是合法的 base64") from None
     if len(key) != 32:
-        raise CryptoError(f"LISTEN_CREDENTIAL_KEY 解码后是 {len(key)} 字节，需要 32 字节")
+        raise CryptoError(f"MUSIC_CREDENTIAL_KEY 解码后是 {len(key)} 字节，需要 32 字节")
     return key
 
 
