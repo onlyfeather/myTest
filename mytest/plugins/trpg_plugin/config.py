@@ -4,6 +4,44 @@ from nonebot import logger
 
 from .._shared.settings import SettingField, SettingSection, register
 
+FALLBACK_SLOTS = 3
+ROLES = {"arbiter": "裁决", "narrator": "叙述", "reviewer": "审查"}
+
+
+def _model_fields() -> list[SettingField]:
+    fields = [
+        SettingField(
+            f"{role}_model",
+            f"{label}用的模型",
+            default="",
+            group="模型",
+            help="留空用「大模型」分区里的模型。接口地址和密钥都用「大模型」分区的。"
+                 + ("裁决需要稳定输出 JSON，建议用能力强一些的模型" if role == "arbiter" else ""),
+        )
+        for role, label in ROLES.items()
+    ]
+    fields.append(SettingField(
+        "output_mode",
+        "结构化输出方式",
+        type="select",
+        default="schema",
+        options=(("schema", "JSON Schema（最稳，接口要支持）"), ("json", "JSON 模式"), ("plain", "只靠提示词")),
+        group="模型",
+        help="接口不支持时会自动退一档。不管哪种方式，代码都会再校验一遍",
+    ))
+    for i in range(1, FALLBACK_SLOTS + 1):
+        group = f"兜底模型 {i}"
+        fields += [
+            SettingField(f"fallback{i}_model", "模型", default="", group=group,
+                         help="主模型连续失败 3 次后按顺序换兜底模型。留空表示不用这一项"),
+            SettingField(f"fallback{i}_base_url", "接口地址", default="", group=group,
+                         placeholder="https://api.deepseek.com/v1",
+                         help="留空表示和「大模型」分区用同一个接口和密钥；填了别的服务商就要在下面填它的密钥"),
+            SettingField(f"fallback{i}_api_key", "API Key", type="secret", default="", group=group),
+        ]
+    return fields
+
+
 trpg_settings = register(
     SettingSection(
         id="trpg",
@@ -48,6 +86,7 @@ trpg_settings = register(
                 group="等待行动",
                 help="所有人都说了要做什么之后，再等这么久没人补充，才开始结算。方便一个人分几条说完",
             ),
+            *_model_fields(),
         ],
     )
 )
@@ -65,6 +104,23 @@ def timing():
         standby_after=int(trpg_settings.standby_after) * 3600,
         settle_delay=int(trpg_settings.settle_delay),
     )
+
+
+def endpoints(role: str):
+    """某个环节（arbiter / narrator / reviewer）按顺序可用的模型。"""
+    from .._shared.settings import llm_settings
+    from .ai import build_endpoints
+
+    main = {k: getattr(llm_settings, k) for k in ("base_url", "api_key", "model", "proxy", "timeout")}
+    fallbacks = [
+        {k: getattr(trpg_settings, f"fallback{i}_{k}") for k in ("base_url", "api_key", "model")}
+        for i in range(1, FALLBACK_SLOTS + 1)
+    ]
+    return build_endpoints(main, str(getattr(trpg_settings, f"{role}_model")), fallbacks)
+
+
+def output_mode() -> str:
+    return str(trpg_settings.output_mode)
 
 
 def _resolve_data_dir() -> Path:
