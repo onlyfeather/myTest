@@ -55,6 +55,8 @@
 
 模组 ID 和所有内部 ID 用无含义的编号（`c1`、`n2`），防止 ID 本身泄密。
 
+下面是最初的草稿。实际实现的格式见 `docs/trpg-module-format.md`，和草稿的区别：标记也用无含义编号（`f1`）；线索只在线索里写所在场景，场景不再列线索；去掉 `on_enter`，进场景触发的事件写成 `"when": {"scene": "s2"}`；顶层加了真相的 `spoiler_words`；线索可以 `set_flags`。
+
 ```jsonc
 {
   "format": 1,
