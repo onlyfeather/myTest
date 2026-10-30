@@ -1,7 +1,7 @@
 """跑团的 SQLite 存储。只管读写，规则在 campaign.py。不依赖 NoneBot。
 
 所有事实都存在这里，模型每轮从这里读，不靠它自己记。
-本轮流程用到的表（round、round_action、round_roll、outbox、log、summary）在实现对应步骤时加上。
+结算用到的表（round_roll、outbox、log、summary）在实现对应步骤时加上。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 -- 上传的模组（插件自带的模组不进这张表，直接读文件）
@@ -77,6 +77,32 @@ CREATE TABLE IF NOT EXISTS campaign_clue (
     PRIMARY KEY (campaign_id, clue)
 );
 
+CREATE TABLE IF NOT EXISTS round (
+    campaign_id INTEGER NOT NULL,
+    no INTEGER NOT NULL,
+    phase TEXT NOT NULL,                   -- collecting（收集中）/ collected（收齐，结算中）/ done
+    started_at INTEGER NOT NULL,
+    clock_from INTEGER NOT NULL,           -- 超时从这个时间往后算；暂停后继续时重置
+    asked_at INTEGER,                      -- 问过「还有人要行动吗」的时间
+    collected_at INTEGER,
+    standby TEXT NOT NULL DEFAULT '[]',    -- 超时没行动、按原地待命处理的 QQ 号
+    data TEXT NOT NULL DEFAULT '{}',       -- 各步骤的输入输出
+    PRIMARY KEY (campaign_id, no)
+);
+
+CREATE TABLE IF NOT EXISTS round_action (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    round_no INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    withdrawn INTEGER NOT NULL DEFAULT 0,  -- 撤回或改成场外
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS round_action_round ON round_action(campaign_id, round_no);
+CREATE UNIQUE INDEX IF NOT EXISTS round_action_message ON round_action(campaign_id, message_id);
+
 CREATE TABLE IF NOT EXISTS campaign_npc (
     campaign_id INTEGER NOT NULL,
     npc TEXT NOT NULL,
@@ -95,8 +121,11 @@ PLAYER_COLUMNS = (
     "campaign_id", "user_id", "name", "occupation", "pregen", "sheet", "san", "luck", "hp",
     "items", "status", "joined_round", "left_round", "joined_at",
 )
+ROUND_COLUMNS = ("campaign_id", "no", "phase", "started_at", "clock_from", "asked_at", "collected_at", "standby", "data")
+ACTION_COLUMNS = ("id", "round_no", "user_id", "message_id", "text", "withdrawn", "created_at")
 CAMPAIGN_UPDATABLE = {"phase", "scene", "round", "game_time", "end_reason"}
 PLAYER_UPDATABLE = {"status", "left_round", "san", "luck", "hp", "items"}
+ROUND_UPDATABLE = {"phase", "clock_from", "asked_at", "collected_at", "standby", "data"}
 
 
 class Store:
@@ -249,6 +278,48 @@ class Store:
         cur = db.execute("INSERT OR IGNORE INTO campaign_clue (campaign_id, clue, user_id, round) VALUES (?, ?, ?, ?)",
                          (campaign_id, clue, user_id, round_no))
         return cur.rowcount > 0
+
+    # ---------------------------------------------------------------- 轮次和行动
+
+    def round(self, campaign_id: int, no: int) -> sqlite3.Row | None:
+        return self._one(f"SELECT {', '.join(ROUND_COLUMNS)} FROM round WHERE campaign_id = ? AND no = ?",
+                         (campaign_id, no))
+
+    def insert_round(self, db: sqlite3.Connection, campaign_id: int, no: int, now: int) -> None:
+        db.execute("INSERT OR IGNORE INTO round (campaign_id, no, phase, started_at, clock_from)"
+                   " VALUES (?, ?, 'collecting', ?, ?)", (campaign_id, no, now, now))
+
+    def update_round(self, db: sqlite3.Connection, campaign_id: int, no: int, **fields: Any) -> None:
+        unknown = set(fields) - ROUND_UPDATABLE
+        if unknown:
+            raise ValueError(f"round 不能改这些字段：{sorted(unknown)}")
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        db.execute(f"UPDATE round SET {sets} WHERE campaign_id = ? AND no = ?", (*fields.values(), campaign_id, no))
+
+    def actions(self, campaign_id: int, round_no: int) -> list[sqlite3.Row]:
+        return self._all(
+            f"SELECT {', '.join(ACTION_COLUMNS)} FROM round_action WHERE campaign_id = ? AND round_no = ? ORDER BY id",
+            (campaign_id, round_no),
+        )
+
+    def action_by_message(self, campaign_id: int, message_id: str) -> sqlite3.Row | None:
+        return self._one(
+            f"SELECT {', '.join(ACTION_COLUMNS)} FROM round_action WHERE campaign_id = ? AND message_id = ?",
+            (campaign_id, message_id),
+        )
+
+    def insert_action(self, db: sqlite3.Connection, campaign_id: int, round_no: int, user_id: str,
+                      message_id: str, text: str, now: int) -> bool:
+        """同一条消息只记一次（重启后 QQ 重发的消息不会重复）。"""
+        cur = db.execute(
+            "INSERT OR IGNORE INTO round_action (campaign_id, round_no, user_id, message_id, text, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (campaign_id, round_no, user_id, message_id, text, now),
+        )
+        return cur.rowcount > 0
+
+    def withdraw_action(self, db: sqlite3.Connection, action_id: int) -> None:
+        db.execute("UPDATE round_action SET withdrawn = 1 WHERE id = ?", (action_id,))
 
     def npcs(self, campaign_id: int) -> list[sqlite3.Row]:
         return self._all("SELECT npc, attitude, location, appeared FROM campaign_npc WHERE campaign_id = ? ORDER BY rowid",

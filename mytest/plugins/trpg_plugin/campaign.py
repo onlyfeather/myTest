@@ -322,6 +322,7 @@ class Campaigns:
                 where = next((s.id for s in module.scenes if npc.id in s.npcs), "")
                 self.store.insert_npc(db, campaign.id, npc.id, npc.attitude, where)
             self.store.update_campaign(db, campaign.id, now, phase=RUNNING, scene=module.start_scene, round=1)
+            self.store.insert_round(db, campaign.id, 1, now)
         return self.get(campaign.id), module
 
     def pause(self, group_id: str, actor: Actor) -> Campaign:
@@ -340,8 +341,11 @@ class Campaigns:
             raise CampaignError(f"团现在{PHASE_NAMES[campaign.phase]}，不用继续")
         if not self.players(campaign.id, ACTIVE):
             raise CampaignError("团里没有调查员了。先「/加入」再继续")
+        now = self._now()
         with self.store.transaction() as db:
-            self.store.update_campaign(db, campaign.id, self._now(), phase=RUNNING)
+            self.store.update_campaign(db, campaign.id, now, phase=RUNNING)
+            # 暂停的时间不算进超时，「还有人要行动吗」也重新问
+            self.store.update_round(db, campaign.id, campaign.round, clock_from=now, asked_at=None)
         return self.get(campaign.id)
 
     def end(self, group_id: str, actor: Actor, reason: str = "") -> Campaign:
