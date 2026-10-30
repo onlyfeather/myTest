@@ -1,6 +1,8 @@
 import random
 import re
 
+from .coc import CRITICAL, FAILURE, FUMBLE, SUCCESS, success_level
+
 MAX_DICE_FACES = 1_000_000
 
 
@@ -46,17 +48,21 @@ class DiceLogic:
         return max_val, target_val, event_name
 
     def _get_status(self, score, target, max_val):
+        """越小越好，和 CoC（.ra）一样：点数 ≤ 目标值算成功。
+
+        d100 直接用 CoC 7 版的六档。其他面数：最低 5%（至少 1）是大成功，最高 5% 是大失败，其余按是否 ≤ 目标值。
+        """
         if target is None:
             return "无判定"
+        if max_val == 100:
+            return success_level(score, target)
 
-        threshold = max(1, int(max_val * 0.05))
-        if score <= threshold:
-            return "大失败"
-        if score >= (max_val - threshold + 1):
-            return "大成功"
-        if score >= target:
-            return "成功"
-        return "失败"
+        band = max(1, int(max_val * 0.05))
+        if score <= band:
+            return CRITICAL
+        if score > max_val - band:
+            return FUMBLE
+        return SUCCESS if score <= target else FAILURE
 
     def execute_roll(self, max_val: int, target: int | None, event_name: str) -> dict:
         # 好感度只影响 AI 语言风格，不影响骰点。

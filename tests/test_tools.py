@@ -172,6 +172,16 @@ def test_dice_tool_sends_result_and_returns_numbers(sent):
         asyncio.run(TOOLS["dice"].run(ctx, {"faces": "abc"}))
 
 
+def test_dice_tool_uses_lower_is_better(sent, monkeypatch):
+    """凛音帮人投的检定和 .ra 一样：点数越小越好。"""
+    from mytest.plugins.dice_girl_plugin.dice import engine
+    from mytest.plugins.tools_api_plugin.tools import TOOLS
+
+    monkeypatch.setattr(engine.random, "randint", lambda a, b: 8)
+    result = asyncio.run(TOOLS["dice"].run(ToolContext("123456", "654321"), {"target": 60, "event": "侦查"}))
+    assert result["status"] == "极难成功" and "极难成功" in sent[0][1]
+
+
 def test_tts_tool_singing_only_for_superuser(sent, monkeypatch):
     from types import SimpleNamespace
 

@@ -65,6 +65,7 @@ def build_offline_dice_reply(data: dict) -> str:
     status = data.get("final_status", "无判定")
 
     if target is None:
+        # 没有目标值时只是随机数，不分好坏
         if final_roll == max_val:
             return "【离线裁判】满点。命运今天像是误把你加入了白名单。"
         if final_roll == 1:

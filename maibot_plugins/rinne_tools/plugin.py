@@ -166,7 +166,10 @@ TTS_TEXT_DESC = (
     "停顿用 [break]、[long-break]。每句最多 3 个标记，要贴合人设和当下心情，不要每句都一样。"
     "唱歌时开头写 [singing]，后面是歌词。不要写（动作描写）、表情符号和波浪号"
 )
-DICE_DESC = "投骰子、做检定、抽签、帮忙随机决定时调用。点数由工具真随机产生并直接发到聊天里，你不能自己编点数，只需要点评。"
+DICE_DESC = (
+    "投骰子、做检定、抽签、帮忙随机决定时调用。点数由工具真随机产生并直接发到聊天里，你不能自己编点数，只需要点评。"
+    "有目标值时按跑团（CoC）规则判定：点数越小越好，不超过目标值就是成功，工具会告诉你是哪一档"
+)
 PIXIV_DESC = "在 Pixiv 上找插画发到聊天里。对方想看某个角色、某类题材的图时调用。"
 DAILY_DESC = "从 Pixiv 挑一张今日推荐发到聊天里。对方想看看今天的图、每日一图时调用。"
 QZONE_DESC = (
@@ -487,7 +490,8 @@ class RinneToolsPlugin(MaiBotPlugin):
             _msg_id_param(),
             ToolParameterInfo(name="faces", param_type=ToolParamType.INTEGER, description="骰子面数",
                               required=False, default=100),
-            ToolParameterInfo(name="target", param_type=ToolParamType.INTEGER, description="检定的目标值，没有就不填", required=False),
+            ToolParameterInfo(name="target", param_type=ToolParamType.INTEGER,
+                              description="检定的目标值（技能值），点数不超过它就成功；没有就不填", required=False),
             ToolParameterInfo(name="event", param_type=ToolParamType.STRING, description="检定的事件名，例如「侦查」「今天吃什么」", required=False),
         ],
         core_tool=True,

@@ -94,6 +94,36 @@ def test_check_header():
         check(60, 4)
 
 
+@pytest.mark.parametrize("faces,roll_value,target,status", [
+    # d100 和 .ra 一样分六档
+    (100, 1, 60, CRITICAL), (100, 12, 60, EXTREME), (100, 45, 60, SUCCESS), (100, 61, 60, FAILURE),
+    (100, 97, 40, FUMBLE), (100, 100, 90, FUMBLE),
+    # 其他面数：最低 5%（至少 1）大成功，最高 5% 大失败，其余看是否 ≤ 目标值
+    (20, 1, 15, CRITICAL), (20, 15, 15, SUCCESS), (20, 16, 15, FAILURE), (20, 20, 19, FUMBLE),
+    (6, 1, 3, CRITICAL), (6, 3, 3, SUCCESS), (6, 4, 3, FAILURE), (6, 6, 5, FUMBLE),
+])
+def test_rd_target_check_is_lower_is_better(faces, roll_value, target, status, monkeypatch):
+    from mytest.plugins.dice_girl_plugin.dice import engine
+
+    monkeypatch.setattr(engine.random, "randint", lambda a, b: roll_value)
+    result = engine.dice_logic.execute_roll(faces, target, "侦查")
+    assert (result["final_roll"], result["final_status"]) == (roll_value, status)
+
+
+def test_rd_without_target_has_no_verdict():
+    from mytest.plugins.dice_girl_plugin.dice import dice_logic
+
+    assert dice_logic.execute_roll(100, None, "随机数")["final_status"] == "无判定"
+
+
+def test_prompt_tells_the_model_lower_is_better():
+    from mytest.plugins.dice_girl_plugin.llm.prompts.dice import build_dice_user_prompt
+
+    text = build_dice_user_prompt(50, {"event": "侦查", "target": 60, "max": 100, "final_roll": 5,
+                                       "final_status": EXTREME})
+    assert "越小越好" in text and "极难成功" in text
+
+
 # ---------------------------------------------------------------- 理智
 
 

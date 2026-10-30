@@ -64,8 +64,8 @@ def build_dice_user_prompt(user_fav: int, data: dict) -> str:
 
     return (
         f"{base_info}\n"
-        f"投骰类型：目标值检定。\n"
+        f"投骰类型：目标值检定（跑团规则：点数越小越好，不超过目标值就是成功）。\n"
         f"最终结果：{data['final_roll']}/{data['target']}。\n"
         f"判定状态：{data['final_status']}。\n"
-        f"请根据判定状态和角色性格做简短点评。"
+        f"请根据判定状态和角色性格做简短点评，不要把小点数说成运气差。"
     )

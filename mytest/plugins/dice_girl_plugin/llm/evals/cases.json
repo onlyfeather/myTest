@@ -9,7 +9,7 @@
         "event": "侦查",
         "target": 60,
         "max": 100,
-        "final_roll": 72,
+        "final_roll": 42,
         "final_status": "成功"
       },
       "expected_prompt_terms": [
@@ -35,7 +35,7 @@
         "event": "潜行",
         "target": 60,
         "max": 100,
-        "final_roll": 1,
+        "final_roll": 100,
         "final_status": "大失败"
       },
       "expected_prompt_terms": [
