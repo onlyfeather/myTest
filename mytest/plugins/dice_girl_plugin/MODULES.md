@@ -8,9 +8,11 @@
 - `handlers/`: 命令入口。`dice.py` 投骰（`/dice 投骰`、`.rd`），`status.py` 状态和帮助，
   `admin.py` AI 开关和设置好感（SUPERUSER 私聊），`role.py` 切换点评角色。
 - `dice/`: 纯骰子核心：指令解析、随机投骰、成功状态判定，不依赖 LLM。
+  `expression.py` 掷骰表达式（3d6+2），`coc.py` CoC 7 版的检定、奖励骰 / 惩罚骰、理智检定、角色卡解析。
+- `handlers/coc.py`: `.ra` / `.rc` 检定、`.sc` 理智检定、`.st` 角色卡。角色卡按「人 + 群」存，私聊单独一张。
 - `llm/`: OpenAI 兼容接口调用、点评 prompt、输出解析和离线兜底文案。
 - `persona/`: 读取 `personas.json`，计算上班 / 下班状态和私聊专属设定。
-- `storage/`: SQLite：好感度、群 / 私聊的点评角色。
+- `storage/`: SQLite：好感度、群 / 私聊的点评角色、跑团角色卡（`character_skills`）。
 
 ## 角色卡（`personas.json`）
 
@@ -38,7 +40,7 @@ ban_msgs_regex = ["^[./。]", "^/?p站", "^(搜图|最新|美图|热门|每日�
 如果改成只列具体指令，记得带上：
 
 ```toml
-ban_msgs_regex = ["^[.。]rd", "^/(dice|p站|status|状态|echo|帮助|help|菜单|画图|nai|gpt画图|说)", "^p站", "^(搜图|最新|美图|热门|每日一图|状态|status)(\\s|$)"]
+ban_msgs_regex = ["^[.。](rd|r[ac]|sc|st)", "^/(dice|p站|status|状态|echo|帮助|help|菜单|画图|nai|gpt画图|再画|再来一张|改图|说|点歌)", "^p站", "^(搜图|最新|美图|热门|每日一图|状态|status)(\\s|$)"]
 ```
 
 ## Tests

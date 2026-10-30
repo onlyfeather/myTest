@@ -52,11 +52,13 @@ def build_dice_user_prompt(user_fav: int, data: dict) -> str:
     base_info = f"用户好感度：{user_fav}。动作：{data['event']}。"
 
     if data["target"] is None:
+        expression = data.get("expression")
         return (
             f"{base_info}\n"
             f"投骰类型：纯随机投掷，无成功/失败判定。\n"
-            f"投骰范围：1-{data['max']}。\n"
-            f"最终结果：{data['final_roll']}。\n"
+            + (f"掷骰表达式：{expression}，可能的范围：{data['min']}-{data['max']}。\n" if expression
+               else f"投骰范围：1-{data['max']}。\n")
+            + f"最终结果：{data['final_roll']}。\n"
             f"请根据数字大小和角色性格做简短点评。"
         )
 

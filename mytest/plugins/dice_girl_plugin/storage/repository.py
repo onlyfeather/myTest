@@ -75,9 +75,40 @@ def init_db():
         """
         )
 
+        # 跑团角色卡：每个人在每个群（私聊算一个 scope）各有一张，不同群跑不同的团。
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS character_skills (
+                user_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                name TEXT NOT NULL,
+                value INTEGER NOT NULL,
+                PRIMARY KEY (user_id, scope, name)
+            )
+        """
+        )
+
         conn.commit()
     finally:
         conn.close()
+
+
+def get_skills(user_id: str, scope: str) -> dict[str, int]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT name, value FROM character_skills WHERE user_id = ? AND scope = ? ORDER BY rowid",
+            (user_id, scope),
+        ).fetchall()
+    return {name: value for name, value in rows}
+
+
+def save_skills(user_id: str, scope: str, skills: dict[str, int]) -> None:
+    with get_connection() as conn:
+        conn.execute("DELETE FROM character_skills WHERE user_id = ? AND scope = ?", (user_id, scope))
+        conn.executemany(
+            "INSERT INTO character_skills (user_id, scope, name, value) VALUES (?, ?, ?, ?)",
+            [(user_id, scope, name, int(value)) for name, value in skills.items()],
+        )
 
 
 def get_group_role(group_id: str) -> str:

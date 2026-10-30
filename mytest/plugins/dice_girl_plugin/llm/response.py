@@ -77,6 +77,8 @@ def build_offline_dice_reply(data: dict) -> str:
 
     if status == "大成功":
         return "【离线裁判】大成功。罕见到系统开始怀疑骰子是不是短暂地相信了你。"
+    if status in ("极难成功", "困难成功"):
+        return f"【离线裁判】{status}。这次连骰子都挑不出毛病。"
     if status == "成功":
         return "【离线裁判】成功。恭喜，你暂时战胜了统计学的冷漠。"
     if status == "大失败":
