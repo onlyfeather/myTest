@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "id": "onlyfeather.rinne-trpg-guard",
+  "version": "1.0.0",
+  "name": "跑团群静默",
+  "description": "指定的跑团群里 MaiBot 不处理任何消息，交给 NoneBot 的跑团插件（凛音当 KP）。先用只记录模式确认，再打开拦截。",
+  "author": {
+    "name": "onlyfeather",
+    "url": "https://github.com/onlyfeather"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/onlyfeather/myTest"
+  },
+  "host_application": {
+    "min_version": "1.3.0",
+    "max_version": "1.3.99"
+  },
+  "sdk": {
+    "min_version": "2.10.0",
+    "max_version": "2.16.99"
+  },
+  "plugin_type": "data",
+  "capabilities": [],
+  "i18n": {
+    "default_locale": "zh-CN"
+  }
+}
