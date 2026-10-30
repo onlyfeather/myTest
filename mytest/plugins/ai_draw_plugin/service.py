@@ -17,6 +17,7 @@ class DrawResult:
     provider: str
     prompt_used: str
     note: str = ""
+    size: str = "竖图"
 
 
 @dataclass
@@ -25,6 +26,8 @@ class DrawInputs:
 
     references: list[bytes] = field(default_factory=list)  # 原始图片字节
     artists: str | None = None  # None 表示用默认画师串
+    source: bytes | None = None  # 改图：在这张图上修改（NovelAI 图生图 / GPT Image 编辑）
+    translated: bool = False  # 描述已经是 tag（再画时用上次翻译好的），不再翻译
 
 
 def check_reference_supported(provider: str) -> str:
@@ -38,9 +41,14 @@ async def draw_novelai(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
     s = novelai_settings
     prompt = req.prompt
     notes = []
-    if s.translate and has_chinese(prompt):
+    if s.translate and not inputs.translated and has_chinese(prompt):
         prompt = await to_novelai_tags(prompt)
         notes.append(f"tag：{prompt}")
+    size = req.size
+    source = None
+    if inputs.source is not None:
+        image, size = images.cover(inputs.source, novelai.SIZES)
+        source = novelai.Img2Img(image=image, strength=float(s.img2img_strength), noise=float(s.img2img_noise))
     artists = str(s.default_artists) if inputs.artists is None else inputs.artists
     reference = None
     if inputs.references:
@@ -54,7 +62,7 @@ async def draw_novelai(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
             fidelity=float(s.reference_fidelity),
         )
         notes.append("参考：角色＋画风" if req.with_style else "参考：角色")
-    width, height = novelai.SIZES[req.size]
+    width, height = novelai.SIZES[size]
     image, seed = await novelai.generate(
         novelai.NovelAIRequest(
             prompt=compose(str(s.positive_prefix), artists, prompt),
@@ -66,26 +74,33 @@ async def draw_novelai(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
             scale=float(s.scale),
             sampler=str(s.sampler),
             reference=reference,
+            source=source,
         ),
         token=str(s.token),
         base_url=str(s.base_url),
         proxy=str(draw_settings.proxy),
         timeout=float(s.timeout),
     )
-    logger.info("[AI画图] NovelAI 完成：model={}, size={}, seed={}, 参考图={}, 自定义画师={}",
-                s.model, req.size, seed, reference is not None, inputs.artists is not None)
-    return DrawResult(image=image, provider="NovelAI", prompt_used=prompt, note="\n".join(notes))
+    logger.info("[AI画图] NovelAI 完成：model={}, size={}, seed={}, 参考图={}, 自定义画师={}, 改图={}",
+                s.model, size, seed, reference is not None, inputs.artists is not None, source is not None)
+    return DrawResult(image=image, provider="NovelAI", prompt_used=prompt, note="\n".join(notes), size=size)
 
 
 async def draw_gpt(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
     s = gpt_image_settings
-    refs = [images.normalize(img)[0] for img in inputs.references[: gpt_image.MAX_REFERENCES]]
+    # 改图时把原图放在第一张，接口按描述修改它
+    originals = ([inputs.source] if inputs.source is not None else []) + inputs.references
+    refs = [images.normalize(img)[0] for img in originals[: gpt_image.MAX_REFERENCES]]
+    size = req.size
+    if inputs.source is not None:
+        # 改出来的图和原图同一个方向（竖 / 横 / 方）
+        size = images.cover(inputs.source, novelai.SIZES)[1]
     image = await gpt_image.generate(
         req.prompt,
         api_key=str(s.api_key),
         base_url=str(s.base_url),
         model=str(s.model),
-        size=gpt_image.SIZES[req.size],
+        size=gpt_image.SIZES[size],
         quality=str(s.quality),
         moderation=str(s.moderation),
         proxy=str(draw_settings.proxy),
@@ -94,7 +109,7 @@ async def draw_gpt(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
     )
     logger.info("[AI画图] GPT Image 完成：model={}, size={}, 参考图={}", s.model, req.size, len(refs))
     return DrawResult(image=image, provider="GPT Image", prompt_used=req.prompt,
-                      note=f"参考了 {len(refs)} 张图" if refs else "")
+                      note=f"参考了 {len(inputs.references)} 张图" if inputs.references else "", size=size)
 
 
 async def draw(provider: str, req: DrawRequest, inputs: DrawInputs | None = None) -> DrawResult:

@@ -95,6 +95,10 @@ novelai_settings = register(
                     "watermark, username, blurry"
                 ),
             ),
+            SettingField("img2img_strength", "改图强度", type="float", default=0.55, minimum=0.01, maximum=0.99,
+                         help="/改图 时原图能被改动多少。越高越听描述的、越不像原图；0.4-0.6 一般能保住构图"),
+            SettingField("img2img_noise", "改图噪声", type="float", default=0.0, minimum=0, maximum=0.99,
+                         help="加一点（0.05-0.2）能让改出来的地方多些新细节，太高画面会变脏"),
             SettingField("translate", "中文自动翻译成 tag", type="bool", default=True),
             SettingField("timeout", "超时（秒）", type="float", default=120.0, minimum=10, maximum=600),
         ],

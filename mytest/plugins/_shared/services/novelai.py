@@ -82,6 +82,16 @@ class NovelAIRequest:
     sampler: str
     seed: int | None = None
     reference: CharacterReference | None = None
+    source: Img2Img | None = None
+
+
+@dataclass
+class Img2Img:
+    """图生图：在这张图的基础上按描述重画。图片尺寸必须和请求的宽高一致。"""
+
+    image: bytes  # PNG
+    strength: float = 0.5  # 越高改得越多
+    noise: float = 0.0  # 加一点噪声能让画面多出新细节
 
 
 OFFICIAL_HOST = "https://image.novelai.net"
@@ -167,7 +177,18 @@ def build_payload(req: NovelAIRequest) -> dict[str, Any]:
                 "director_reference_secondary_strength_values": [round(1 - ref.fidelity, 4)],
             }
         )
-    return {"input": req.prompt, "model": req.model, "action": "generate", "parameters": parameters}
+    action = "generate"
+    if req.source is not None:
+        action = "img2img"
+        parameters.update(
+            {
+                "image": base64.b64encode(req.source.image).decode(),
+                "strength": req.source.strength,
+                "noise": req.source.noise,
+                "extra_noise_seed": seed,
+            }
+        )
+    return {"input": req.prompt, "model": req.model, "action": action, "parameters": parameters}
 
 
 def extract_image(content: bytes) -> bytes:

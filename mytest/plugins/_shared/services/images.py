@@ -57,6 +57,22 @@ def letterbox(data: bytes, canvases: tuple[tuple[int, int], ...]) -> tuple[bytes
     return out.getvalue(), (width, height)
 
 
+def cover(data: bytes, sizes: dict[str, tuple[int, int]]) -> tuple[bytes, str]:
+    """选宽高比最接近的尺寸，等比缩放到铺满后裁掉多出的部分（图生图不能有黑边）。返回 (PNG, 尺寸名)。"""
+    from PIL import Image
+
+    img = _flatten(_open(data))
+    ratio = img.width / img.height
+    name, (width, height) = min(sizes.items(), key=lambda item: abs(item[1][0] / item[1][1] - ratio))
+    scale = max(width / img.width, height / img.height)
+    size = (max(width, round(img.width * scale)), max(height, round(img.height * scale)))
+    resized = img.resize(size, Image.Resampling.LANCZOS)
+    left, top = (size[0] - width) // 2, (size[1] - height) // 2
+    out = io.BytesIO()
+    resized.crop((left, top, left + width, top + height)).save(out, format="PNG")
+    return out.getvalue(), name
+
+
 def normalize(data: bytes, *, max_side: int = 2048) -> tuple[bytes, str]:
     """统一转成 PNG，长边超过 max_side 时等比缩小。返回 (图片, MIME)。"""
     from PIL import Image
