@@ -169,6 +169,7 @@ input[type=search]:focus { outline: none; border-color: var(--accent); backgroun
 const API = location.pathname.replace(/\/+$/, "") + "/api";
 const state = { sections: [], pickers: [], current: null, draft: {}, reset: new Set(), errors: {} };
 const PICKER = "pick:"; // 选择页在 state.current / 地址栏里的前缀
+const STATUS = "status"; // 运行状态页
 const root = document.getElementById("root");
 
 function h(tag, attrs, ...children) {
@@ -491,8 +492,63 @@ function renderPicker(p, main) {
     current, form, list);
 }
 
+/* ---------------- 运行状态 ---------------- */
+let statusTimer = 0;
+let statusData = null;
+const LEVEL_COLOR = { ok: "var(--ok)", warn: "var(--warn)", error: "var(--danger)" };
+const LEVEL_TEXT = { ok: "正常", warn: "注意", error: "异常" };
+
+async function loadStatus() {
+  clearTimeout(statusTimer);
+  if (state.current !== STATUS) return;
+  const r = await api("/status").catch(() => null);
+  if (state.current !== STATUS) return;
+  if (r && r.ok) { statusData = r; renderMain(); }
+  statusTimer = setTimeout(loadStatus, 10000);
+}
+
+function clock(ts) {
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  const today = new Date().toDateString() === d.toDateString();
+  return (today ? "" : `${d.getMonth() + 1}-${pad(d.getDate())} `) + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function levelBadge(level) {
+  if (!level) return null;
+  return h("span", { class: "badge", style: `color:${LEVEL_COLOR[level]};border-color:currentColor` }, LEVEL_TEXT[level]);
+}
+
+function eventList(title, items, empty) {
+  return h("div", { style: "margin-top:24px" },
+    h("h3", { style: "margin:0 0 8px;font-size:16px" }, title),
+    items.length ? h("div", { class: "card" }, items.map((e) => h("div", { class: "row" },
+      h("div", {}, h("div", { class: "help", style: "margin:0" }, clock(e.time)),
+        h("div", { class: "meta" }, levelBadge(e.level))),
+      h("div", { style: "word-break:break-all" },
+        e.source ? h("div", { class: "help", style: "margin:0 0 2px" }, e.source) : null, e.message))))
+      : h("div", { class: "card" }, h("div", { class: "empty", style: "padding:20px" }, empty)));
+}
+
+function renderStatus(main) {
+  const refresh = h("button", { class: "btn", type: "button", onclick: loadStatus }, "刷新");
+  const head = h("div", { class: "head" },
+    h("div", {}, h("h2", {}, "运行状态"), h("p", {}, "每 10 秒自动刷新。日志只保留在内存里，重启后清空。")), refresh);
+  if (!statusData) { main.replaceChildren(head, h("div", { class: "empty" }, "加载中…")); return; }
+  const cards = statusData.sections.map((s) => h("div", { style: "margin-top:16px" },
+    h("h3", { style: "margin:0 0 8px;font-size:16px" }, s.title),
+    s.error ? h("div", { class: "err" }, "读取失败：" + s.error) : null,
+    s.rows.length ? h("div", { class: "card" }, s.rows.map((row) => h("div", { class: "row" },
+      h("div", {}, h("span", { class: "name" }, row.label), h("div", { class: "meta" }, levelBadge(row.level))),
+      h("div", { style: "padding-top:7px;word-break:break-all" }, row.value)))) : null));
+  main.replaceChildren(head, ...cards,
+    eventList("凛音最近的工具调用", statusData.tools, "还没有调用"),
+    eventList("最近的警告和错误", statusData.logs, "没有警告和错误"));
+}
+
 function renderMain() {
   const main = document.querySelector("main");
+  if (state.current === STATUS) return renderStatus(main);
   const p = currentPicker();
   if (p) return renderPicker(p, main);
   const s = section();
@@ -512,7 +568,124 @@ function renderMain() {
     h("div", { class: "card" }, s.fields.map(fieldRow)),
     (s.files || []).length ? h("div", { class: "card", style: "margin-top:16px" }, s.files.map((f) => fileRow(s, f))) : null,
     s.accounts ? accountCard(s) : null,
+    s.manager ? managerCard(s) : null,
   ].filter(Boolean));
+  const ms = s.manager ? managerState[s.id] : null;
+  if (ms && !ms.items && !ms.loading && !ms.error) loadManager(s.id);
+}
+
+/* 列表管理（比如 Pixiv 关注的作者）：增删改都立即生效，不走底部的「保存」。 */
+const managerState = {}; // 分区 id → { items, notice, loading, error, query, open: {key: 值}, busy }
+const MANAGER_PAGE = 50;
+
+async function loadManager(id) {
+  const ms = managerState[id] ||= { items: null, notice: "", query: "", open: {}, shown: MANAGER_PAGE };
+  ms.loading = true; ms.error = "";
+  if (state.current === id) renderMain();
+  const r = await api(`/manager/${encodeURIComponent(id)}/items`, { method: "POST" }).catch(() => null);
+  ms.loading = false;
+  if (!r) return;
+  if (r.ok) { ms.items = r.items; ms.notice = r.notice || ""; } else ms.error = r.message || "读取失败";
+  if (state.current === id) renderMain();
+}
+
+async function runManager(s, action, item, value) {
+  const ms = managerState[s.id];
+  if (action.confirm && !confirm(action.confirm.replace("{title}", item ? item.title : ""))) return;
+  const key = action.name + ":" + (item ? item.id : "");
+  ms.busy = key; renderMain();
+  try {
+    const r = await api(`/manager/${encodeURIComponent(s.id)}/action/${encodeURIComponent(action.name)}`, {
+      method: "POST", body: JSON.stringify({ id: item ? item.id : "", value }),
+    });
+    toast(r.message || (r.ok ? "完成" : "失败"), !!r.ok);
+    if (r.ok) { delete ms.open[key]; await loadManager(s.id); }
+  } catch (e) { /* 已处理 */ } finally { ms.busy = ""; renderMain(); }
+}
+
+function actionButton(s, action, item) {
+  const ms = managerState[s.id];
+  const key = action.name + ":" + (item ? item.id : "");
+  const busy = ms.busy === key;
+  return h("button", {
+    class: "btn" + (action.primary ? " primary" : ""), type: "button", disabled: !!ms.busy,
+    "aria-expanded": action.input ? String(key in ms.open) : null,
+    onclick: () => {
+      if (!action.input) return runManager(s, action, item, null);
+      if (key in ms.open) delete ms.open[key];
+      else {
+        const preset = item?.values?.[action.name];
+        ms.open[key] = Array.isArray(preset) ? preset.join("\n") : (preset || "");
+      }
+      renderMain();
+      document.getElementById("mi-" + key)?.focus();
+    },
+  }, busy ? "处理中…" : action.label);
+}
+
+function actionInput(s, action, item) {
+  const ms = managerState[s.id];
+  const key = action.name + ":" + (item ? item.id : "");
+  if (!(key in ms.open)) return null;
+  const attrs = { id: "mi-" + key, placeholder: action.placeholder || null, "aria-label": action.label,
+    spellcheck: "false", value: ms.open[key], oninput: (e) => { ms.open[key] = e.target.value; } };
+  const field = action.input === "lines" ? h("textarea", attrs) : h("input", { ...attrs, type: "text" });
+  return h("div", { class: "stack", style: "margin-top:8px" }, field,
+    h("div", { class: "inline" },
+      h("button", { class: "btn primary", type: "button", disabled: !!ms.busy,
+        onclick: () => runManager(s, action, item, ms.open[key]) }, "确定"),
+      h("button", { class: "btn", type: "button", onclick: () => { delete ms.open[key]; renderMain(); } }, "取消")));
+}
+
+function managerCard(s) {
+  const m = s.manager;
+  const ms = managerState[s.id] ||= { items: null, notice: "", query: "", open: {}, shown: MANAGER_PAGE };
+  const globals = m.actions.filter((a) => a.scope === "global");
+  const rowActions = m.actions.filter((a) => a.scope === "item");
+  const q = ms.query.trim().toLowerCase();
+  const all = ms.items || [];
+  const matched = q ? all.filter((it) => (it.title + " " + it.detail).toLowerCase().includes(q)) : all;
+  const shown = matched.slice(0, ms.shown);
+
+  let body;
+  if (ms.error) body = h("div", { class: "empty" }, h("div", { class: "err" }, ms.error), h("div", { style: "margin-top:12px" },
+    h("button", { class: "btn", type: "button", onclick: () => loadManager(s.id) }, "重试")));
+  else if (!ms.items) body = h("div", { class: "empty" }, "加载中…");
+  else if (!all.length) body = h("div", { class: "empty" }, "还没有，点上面的按钮添加");
+  else if (!matched.length) body = h("div", { class: "empty" }, "没有匹配的");
+  else body = h("div", {}, h("div", { class: "card" }, shown.map((item) => h("div", { class: "row" },
+    h("div", {},
+      item.link ? h("a", { class: "name", href: item.link, target: "_blank", rel: "noopener noreferrer",
+        style: "color:inherit;word-break:break-all" }, item.title) : h("span", { class: "name" }, item.title),
+      h("div", { class: "meta" }, item.badges.map((b) => h("span", { class: "badge" }, b)))),
+    h("div", {},
+      item.detail ? h("div", { class: "help", style: "margin-top:0" }, item.detail) : null,
+      h("div", { class: "inline", style: "margin-top:8px;flex-wrap:wrap" }, rowActions.map((a) => actionButton(s, a, item))),
+      rowActions.map((a) => actionInput(s, a, item)))))),
+    matched.length > shown.length ? h("div", { class: "inline", style: "justify-content:center;margin-top:12px" },
+      h("button", { class: "btn", type: "button", onclick: () => { ms.shown += MANAGER_PAGE; renderMain(); } },
+        `再显示 ${Math.min(MANAGER_PAGE, matched.length - shown.length)} 个（还有 ${matched.length - shown.length} 个）`)) : null);
+
+  const search = all.length > 10 ? h("input", { type: "search", value: ms.query, placeholder: `在 ${all.length} 个里搜索`,
+    "aria-label": "搜索" + m.title, spellcheck: "false",
+    oninput: (e) => {
+      ms.query = e.target.value; ms.shown = MANAGER_PAGE;
+      const pos = e.target.selectionStart;
+      renderMain();
+      const again = document.querySelector(`input[aria-label="${CSS.escape("搜索" + m.title)}"]`);
+      if (again) { again.focus(); again.setSelectionRange(pos, pos); }
+    } }) : null;
+
+  return h("div", { style: "margin-top:16px" },
+    h("div", { class: "inline", style: "justify-content:space-between;margin:24px 0 8px;flex-wrap:wrap" },
+      h("h3", { style: "margin:0;font-size:16px" }, m.title + (ms.items ? `（${all.length}）` : "")),
+      h("button", { class: "link", type: "button", onclick: () => loadManager(s.id), disabled: ms.loading }, ms.loading ? "刷新中…" : "刷新")),
+    m.help ? h("p", { class: "help", style: "margin:0 0 10px" }, m.help) : null,
+    ms.notice ? h("div", { class: "err", style: "margin:0 0 10px" }, ms.notice) : null,
+    h("div", { class: "inline", style: "flex-wrap:wrap;margin-bottom:4px" }, globals.map((a) => actionButton(s, a, null))),
+    globals.map((a) => actionInput(s, a, null)),
+    search ? h("div", { style: "margin:12px 0 8px" }, search) : h("div", { style: "height:8px" }),
+    body);
 }
 
 /* 账号面板：扫码登录、退出。凭证只在服务端，这里只显示状态。 */
@@ -600,7 +773,10 @@ async function openQr(s, item, kind) {
 
 function renderNav() {
   const nav = document.querySelector("nav");
-  nav.replaceChildren(...state.sections.map((s) => h("button", {
+  nav.replaceChildren(h("button", {
+    type: "button", "aria-current": state.current === STATUS ? "true" : "false",
+    onclick: () => switchTo(STATUS),
+  }, "运行状态"), ...state.sections.map((s) => h("button", {
     type: "button", "aria-current": s.id === state.current ? "true" : "false",
     onclick: () => switchTo(s.id),
   }, s.title, s.id === state.current && dirty() ? h("span", { class: "dot", "aria-label": "有未保存的修改" }) : null)),
@@ -628,6 +804,7 @@ function switchTo(id) {
   location.hash = id;
   renderNav(); renderMain(); updateChrome();
   document.querySelector("main h2")?.focus?.();
+  if (id === STATUS) loadStatus(); else clearTimeout(statusTimer);
 }
 
 async function save() {
@@ -681,9 +858,11 @@ async function load() {
   state.sections = r.sections;
   state.pickers = r.pickers || [];
   const fromHash = decodeURIComponent(location.hash.slice(1));
-  const known = state.sections.some((s) => s.id === fromHash) || state.pickers.some((p) => PICKER + p.id === fromHash);
-  state.current = known ? fromHash : state.sections[0]?.id;
+  const known = fromHash === STATUS || state.sections.some((s) => s.id === fromHash)
+    || state.pickers.some((p) => PICKER + p.id === fromHash);
+  state.current = known ? fromHash : STATUS;
   renderApp();
+  if (state.current === STATUS) loadStatus();
 }
 
 document.addEventListener("keydown", (e) => {

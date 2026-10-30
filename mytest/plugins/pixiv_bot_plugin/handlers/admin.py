@@ -1,13 +1,14 @@
 from nonebot import logger, on_regex
 from nonebot.adapters import Bot, Event
 from nonebot.adapters.onebot.v11 import PrivateMessageEvent
-from nonebot.params import RegexStr
 from nonebot.permission import SUPERUSER
 from nonebot_plugin_alconna import Alconna, Args, Arparma, on_alconna
 from nonebot_plugin_alconna.uniseg import UniMessage
 
-from ..common import PIXIV_PREFIX, extract_plain_text, pixiv_command, report_error
+from ..common import pixiv_command, report_error
 from ..pixiv import get_pixiv_spider
+
+WEBUI_HINT = "Pixiv 登录 Cookie 改到网页里设置了：打开 /webui →「Pixiv」→「登录 Cookie」，保存后点「测试连接」。"
 
 
 async def private_superuser(bot: Bot, event: Event) -> bool:
@@ -21,8 +22,9 @@ quality_setting = Alconna(
     Args["score?", int],
 )
 
+# 旧指令保留：不再接受 Cookie，只提示去 WebUI。带着 Cookie 发过来也不保存、不回显。
 login_matcher = on_regex(
-    r"^/p站\s+登录(?:\s+.*)?$",
+    r"^/?p站\s+登录(?:\s+.*)?$",
     permission=private_superuser,
     priority=1,
     block=True,
@@ -42,43 +44,22 @@ quality_matcher = on_alconna(
 
 
 @login_matcher.handle()
-async def login_handle(event: Event, regex_str: str = RegexStr()):
-    text = (regex_str or extract_plain_text(event)).strip()
-    prefix = f"/{PIXIV_PREFIX} 登录"
-    cookie = text[len(prefix) :].strip() if text.startswith(prefix) else ""
-
-    if not cookie:
-        await UniMessage.text(f"请提供Cookie，例如：/{PIXIV_PREFIX} 登录 your_cookie_string").send()
-        return
-
-    try:
-        async with get_pixiv_spider() as spider:
-            if spider.set_cookie(cookie):
-                await UniMessage.text("✅ 登录成功！Pixiv功能已启用").send()
-            else:
-                await UniMessage.text("❌ 登录失败，请检查Cookie是否正确").send()
-    except Exception as e:
-        await report_error("登录时发生错误", e)
+async def login_handle():
+    await UniMessage.text(WEBUI_HINT + "\n这条消息里的 Cookie 没有保存，建议撤回。").send()
 
 
 @login_status_matcher.handle()
 async def login_status_handle(result: Arparma):
     try:
         async with get_pixiv_spider() as spider:
-            cookie_data = spider.storage.load_cookie()
-            if spider.is_logged_in and cookie_data:
-                user_id = spider.user_id or cookie_data.get("user_id")
-                saved_time = cookie_data.get("saved_time") or "未知"
-                cookie_text = cookie_data.get("full_cookie") or ""
-                message = "✅ p站 登录设置\n\n"
-                message += "状态：已配置 Cookie\n"
-                message += f"用户ID：{user_id or '未记录'}\n"
-                message += f"保存时间：{saved_time}\n"
-                message += f"Cookie长度：{len(cookie_text)} 字符\n\n"
-                message += "提示：这里只表示本地已保存 Cookie，实际有效性以请求 p站 成功为准。"
-                await UniMessage.text(message).send()
-            else:
-                await UniMessage.text("❌ 未登录，请使用「/p站 登录」命令设置Cookie").send()
+            if not spider.is_logged_in:
+                await UniMessage.text("❌ 还没有设置 Pixiv Cookie。" + WEBUI_HINT).send()
+                return
+            try:
+                message = await spider.check_login()
+            except Exception as e:
+                message = f"Cookie 检查没通过：{e}"
+            await UniMessage.text(message).send()
     except Exception as e:
         await report_error("检查登录状态时发生错误", e)
 

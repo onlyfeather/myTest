@@ -86,19 +86,25 @@ async def _get_author_images(spider, user_id: str, mode: str, count: int) -> Opt
     if mode == "random":
         images = await select_quality_random_images(
             spider,
-            illusts,
+            [i for i in illusts if not spider.is_blocked(i)],
             count,
             min_quality_score=spider.min_quality_score,
             max_attempts=10,
-            allow_fallback=True,
             source_prefix="author",
         )
     elif mode == "recent":
-        sorted_illusts = sorted(illusts, key=lambda item: item.get("createDate", ""), reverse=True)
+        # ID 越大越新；profile/top 里的作品不一定带 createDate
+        sorted_illusts = sorted((i for i in illusts if not spider.is_blocked(i)),
+                                key=lambda item: int(item.get("id") or 0), reverse=True)
         images = await build_images_from_candidates(spider, sorted_illusts, count, "author_recent")
     else:
-        sorted_illusts = sorted(illusts, key=lambda item: int(item.get("bookmarkCount", 0) or 0), reverse=True)
-        images = await build_images_from_candidates(spider, sorted_illusts, count, "author_popular")
+        # profile/top 里没有收藏数，要查详情才知道哪张最热门：查最新的 15 张里收藏最多的
+        recent = sorted((i for i in illusts if not spider.is_blocked(i)),
+                        key=lambda item: int(item.get("id") or 0), reverse=True)[:15]
+        details = [(await spider.get_illust_details(i["id"]) or {}, i) for i in recent]
+        ranked = [i for d, i in sorted(details, key=lambda pair: int(pair[0].get("bookmarkCount") or 0),
+                                       reverse=True)]
+        images = await build_images_from_candidates(spider, ranked, count, "author_popular")
 
     if not images:
         return None

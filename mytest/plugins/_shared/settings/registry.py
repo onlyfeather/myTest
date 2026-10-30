@@ -91,6 +91,100 @@ class AccountPanel:
     logout: Callable[[str], None]
 
 
+MANAGER_SCOPES = {"item", "global"}
+MANAGER_INPUTS = {"", "text", "lines"}
+MAX_MANAGER_ITEMS = 5000
+MAX_ACTION_TEXT = 5000
+MAX_ACTION_LINES = 200
+
+
+@dataclass(frozen=True)
+class ManagerAction:
+    """列表管理卡片上的一个按钮。"""
+
+    name: str
+    label: str
+    scope: str = "item"  # item：每一行一个按钮；global：列表上方
+    input: str = ""  # 空：直接执行；text：一个输入框；lines：多行（item 的按钮用 item["values"][name] 预填）
+    placeholder: str = ""
+    confirm: str = ""  # 不为空时先弹确认框，{title} 换成这一行的标题
+    primary: bool = False
+
+    def __post_init__(self) -> None:
+        if self.scope not in MANAGER_SCOPES or self.input not in MANAGER_INPUTS:
+            raise ValueError(f"按钮 {self.name} 的 scope 或 input 不正确")
+
+
+@dataclass
+class ItemManager:
+    """WebUI 里的「列表管理」卡片（比如 Pixiv 关注的作者）：列出条目，增删改由插件处理。
+
+    items() 返回 {"items": [{id, title, detail, link, badges, values}], "notice": "提示"}。
+    run(action, item_id, value) 执行按钮，返回给用户看的结果；用户填错时抛 ValueError。
+    """
+
+    title: str
+    help: str
+    items: Callable[[], Awaitable[dict[str, Any]]]
+    actions: tuple[ManagerAction, ...]
+    run: Callable[[str, str, Any], Awaitable[str]]
+
+    def action(self, name: str) -> ManagerAction:
+        for item in self.actions:
+            if item.name == name:
+                return item
+        raise KeyError(f"没有 {name} 这个操作")
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "help": self.help,
+            "actions": [
+                {"name": a.name, "label": a.label, "scope": a.scope, "input": a.input,
+                 "placeholder": a.placeholder, "confirm": a.confirm, "primary": a.primary}
+                for a in self.actions
+            ],
+        }
+
+
+def _clean_item(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict) or not str(raw.get("id") or "").strip():
+        return None
+    link = str(raw.get("link") or "")
+    values = raw.get("values") if isinstance(raw.get("values"), dict) else {}
+    return {
+        "id": str(raw["id"]).strip()[:100],
+        "title": str(raw.get("title") or raw["id"])[:200],
+        "detail": str(raw.get("detail") or "")[:500],
+        # 只放行 https 链接，前端用新窗口打开
+        "link": link if link.startswith("https://") else "",
+        "badges": [str(b)[:30] for b in (raw.get("badges") or [])][:5],
+        "values": {
+            str(k): [str(v)[:200] for v in val][:MAX_ACTION_LINES] if isinstance(val, list) else str(val)[:2000]
+            for k, val in values.items()
+        },
+    }
+
+
+def _clean_action_value(spec: ManagerAction, value: Any) -> Any:
+    if spec.input == "":
+        return None
+    if spec.input == "text":
+        if not isinstance(value, str):
+            raise ValueError("请填写内容")
+        if len(value) > MAX_ACTION_TEXT:
+            raise ValueError(f"太长了，最多 {MAX_ACTION_TEXT} 个字")
+        return value.strip()
+    if isinstance(value, str):
+        value = value.splitlines()
+    if not isinstance(value, list):
+        raise ValueError("格式不正确")
+    lines = [str(v).strip() for v in value if str(v).strip()]
+    if len(lines) > MAX_ACTION_LINES:
+        raise ValueError(f"最多 {MAX_ACTION_LINES} 行")
+    return [line[:200] for line in lines]
+
+
 @dataclass
 class SettingSection:
     id: str
@@ -106,6 +200,8 @@ class SettingSection:
     files: dict[str, FileSlot] = field(default_factory=dict)
     # 账号面板（比如点歌的 bot 会员账号）：WebUI 里显示登录状态、扫码登录、退出。
     accounts: AccountPanel | None = None
+    # 列表管理（比如 Pixiv 关注的作者）：显示在配置项下面。
+    manager: ItemManager | None = None
 
     def get_field(self, key: str) -> SettingField:
         for item in self.fields:
@@ -252,6 +348,30 @@ class SettingsStore:
         if section is None or section.accounts is None:
             raise KeyError(f"{section_id} 没有账号面板")
         return section.accounts
+
+    def set_manager(self, section_id: str, manager: ItemManager) -> None:
+        with self._lock:
+            self._sections[section_id].manager = manager
+
+    def manager(self, section_id: str) -> ItemManager:
+        section = self._sections.get(section_id)
+        if section is None or section.manager is None:
+            raise KeyError(f"{section_id} 没有列表")
+        return section.manager
+
+    async def manager_items(self, section_id: str) -> dict[str, Any]:
+        raw = await self.manager(section_id).items()
+        items = [c for c in (_clean_item(r) for r in (raw.get("items") or [])[:MAX_MANAGER_ITEMS]) if c]
+        return {"items": items, "notice": str(raw.get("notice") or "")[:500]}
+
+    async def run_manager_action(self, section_id: str, action: str, item_id: str, value: Any) -> str:
+        """KeyError：没有这个列表或操作；ValueError：用户填的不对（说明直接给用户看）。"""
+        manager = self.manager(section_id)
+        spec = manager.action(action)
+        item_id = str(item_id or "").strip()[:100]
+        if spec.scope == "item" and not item_id:
+            raise ValueError("没有指定是哪一项")
+        return await manager.run(spec.name, item_id if spec.scope == "item" else "", _clean_action_value(spec, value))
 
     def add_file_slot(self, section_id: str, slot: FileSlot) -> None:
         with self._lock:
@@ -470,6 +590,7 @@ class SettingsStore:
                         for slot in section.files.values()
                     ],
                     "accounts": _describe_accounts(section.accounts),
+                    "manager": section.manager.describe() if section.manager else None,
                 }
             )
         return result

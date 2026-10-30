@@ -22,6 +22,7 @@ from .._shared.events import group_id_of, is_superuser
 from .._shared.help import HelpTopic, help_registry
 from .._shared.limits import UsageLimiter, scope_allowed
 from .._shared.settings import AccountPanel, settings_store
+from .._shared.status import StatusRow, ago, status_registry
 from .accounts.base import PlatformAccounts
 from .accounts.kugou import KugouAccounts
 from .accounts.netease import NeteaseAccounts
@@ -129,12 +130,41 @@ def _register_vip_panel(vip: VipAccounts) -> None:
     ))
 
 
+def music_status(service: MusicService, vip: VipAccounts) -> list[StatusRow]:
+    rows = []
+    accounts = {item["platform"]: item for item in vip.status()}
+    for platform in service.platforms():
+        name = PLATFORM_NAMES.get(platform, platform)
+        failures, wait = service.sources.health(platform)
+        if wait:
+            rows.append(StatusRow(name, f"连续出错，暂停使用，{int(wait // 60) + 1} 分钟后恢复", "error"))
+        else:
+            rows.append(StatusRow(name, f"正常（最近连续失败 {failures} 次）" if failures else "正常",
+                                  "warn" if failures else "ok"))
+        acc = accounts.get(platform)
+        if acc is None:
+            continue
+        if acc["logged_in"]:
+            text = f"{acc['account_name'] or '已登录'}{' · 会员' if acc['vip'] else ' · 不是会员'}"
+            text += f"，{ago(acc['refreshed_at'] / 1000)}续期" if acc["refreshed_at"] else ""
+            rows.append(StatusRow(f"{name}会员账号", text, "ok" if acc["vip"] else "warn"))
+        elif acc["expired"]:
+            rows.append(StatusRow(f"{name}会员账号", f"已失效：{acc['message'] or '需要重新扫码'}", "error"))
+        else:
+            rows.append(StatusRow(f"{name}会员账号", "未登录，会员歌只能试听", "warn"))
+    missing = [PLATFORM_NAMES[p] for p in ("netease", "kugou") if p not in service.sources]
+    if missing:
+        rows.append(StatusRow("没有接入", "、".join(missing) + "（没有设置接口地址）", "warn"))
+    return rows
+
+
 _store = Store(_db_path())
 vip_accounts = _vip(_store)
 music = MusicService(_sources(), vip_accounts)
 picks = Picker()
 limiter = UsageLimiter()
 _register_vip_panel(vip_accounts)
+status_registry.register("music", "点歌", lambda: music_status(music, vip_accounts), order=40)
 
 driver = get_driver()
 

@@ -17,6 +17,7 @@ from .core import (
 from .help import help_matcher
 from .info import image_info_matcher
 from .preference import alias_matcher, preference_matcher
+from .push import push_check_matcher
 from .stats import popular_tags_matcher, stats_matcher
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "popular_matcher",
     "popular_tags_matcher",
     "preference_matcher",
+    "push_check_matcher",
     "quality_matcher",
     "search_matcher",
     "stats_matcher",

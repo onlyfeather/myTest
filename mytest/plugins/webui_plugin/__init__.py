@@ -6,13 +6,15 @@
 """
 
 import os
+import time
 
-from nonebot import get_app, get_driver, logger
+from nonebot import get_app, get_bots, get_driver, logger
 from nonebot.drivers import ASGIMixin
 from nonebot.plugin import PluginMetadata
 
 from .._shared.services.llm import list_models, test_connection
 from .._shared.settings import settings_store
+from .._shared.status import STARTED_AT, StatusRow, duration, full_snapshot, install_log_sink, status_registry
 from .server import create_router
 
 __plugin_meta__ = PluginMetadata(
@@ -26,6 +28,19 @@ MIN_PASSWORD_LENGTH = 12
 
 settings_store.set_tester("llm", test_connection)
 settings_store.set_options_provider("llm", "model", list_models)
+
+
+def _system_status() -> list[StatusRow]:
+    bots = list(get_bots())
+    return [
+        StatusRow("QQ 机器人", f"在线：{'、'.join(bots)}" if bots else "不在线（NapCat 没有连上）",
+                  "ok" if bots else "error"),
+        StatusRow("已运行", duration(time.time() - STARTED_AT)),
+    ]
+
+
+status_registry.register("system", "系统", _system_status, order=0)
+install_log_sink()
 
 
 def _config_value(name: str) -> str:
@@ -58,7 +73,8 @@ driver = get_driver()
 if isinstance(driver, ASGIMixin):
     get_app().include_router(
         create_router(
-            settings_store, _password, secure_cookie=_secure_cookie, disabled_reason=_disabled_reason
+            settings_store, _password, secure_cookie=_secure_cookie, disabled_reason=_disabled_reason,
+            status=full_snapshot,
         )
     )
     if reason := _disabled_reason():

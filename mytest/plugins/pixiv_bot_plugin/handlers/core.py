@@ -28,6 +28,12 @@ from ..services.core import (
 )
 
 
+def scope_of(event: Event) -> str:
+    """去重按会话算：同一个群里大家共用，私聊各自一份。"""
+    group_id = getattr(event, "group_id", None)
+    return f"group:{group_id}" if group_id else f"private:{event.get_user_id()}"
+
+
 daily_recommend = Alconna(pixiv_command("每日一图"))
 
 search_matcher = on_regex(r"^(?:/?p站\s+)?搜图(?:\s+.*)?$", priority=1, block=True)
@@ -62,7 +68,7 @@ async def search_images_handle(event: Event, regex_str: str = RegexStr()):
             await UniMessage.text(f"{pick('pixiv_search')}（「{display_tags}」{count} 张，{english_mode}模式）").send()
 
         async with get_pixiv_spider() as spider:
-            result = await search_images(spider, parsed)
+            result = await search_images(spider, parsed, scope_of(event))
             if not result.ok:
                 await UniMessage.text(result.message).send()
                 return
@@ -90,7 +96,7 @@ async def latest_images_handle(event: Event, regex_str: str = RegexStr()):
         ).send()
 
         async with get_pixiv_spider() as spider:
-            result = await latest_images(spider, parsed)
+            result = await latest_images(spider, parsed, scope_of(event))
             if not result.ok:
                 await UniMessage.text(result.message).send()
                 return
@@ -112,7 +118,7 @@ async def popular_images_handle(event: Event, regex_str: str = RegexStr()):
         await UniMessage.text(f"{pick('pixiv_search')}（「{tags}」高收藏精选）").send()
 
         async with get_pixiv_spider() as spider:
-            result = await beautiful_image(spider, tags)
+            result = await beautiful_image(spider, tags, scope_of(event))
             if not result.ok:
                 await UniMessage.text(result.message).send()
                 return
@@ -136,7 +142,7 @@ async def hot_images_handle(event: Event, regex_str: str = RegexStr()):
         await UniMessage.text(f"{pick('pixiv_search')}（「{tags}」热门 {count} 张）").send()
 
         async with get_pixiv_spider() as spider:
-            result = await hot_images(spider, tags, count)
+            result = await hot_images(spider, tags, count, scope_of(event))
             if not result.ok:
                 await UniMessage.text(result.message).send()
                 return

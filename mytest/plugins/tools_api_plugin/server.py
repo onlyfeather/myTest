@@ -16,7 +16,19 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from .._shared.status import event_log
 from .tools import ToolContext, ToolError, ToolSpec
+
+
+def _brief(args: dict[str, Any]) -> str:
+    """给运行状态页看的参数摘要。recent_chat 是群聊内容，不记。"""
+    parts = []
+    for key, value in args.items():
+        if key == "recent_chat":
+            continue
+        text = str(value)
+        parts.append(f"{key}={text[:40]}{'…' if len(text) > 40 else ''}")
+    return "，".join(parts)
 
 
 # 只放行本机和局域网 / Docker 网桥。不用 ip.is_private：它把 203.0.113.0/24 这类文档地址也算进去。
@@ -80,6 +92,8 @@ def create_router(
             return error(400, "请求格式不正确")
         if not isinstance(body, dict):
             return error(400, "请求格式不正确")
+        who = str(body.get("user_id") or "?")[:12]
+        where = f"群 {str(body.get('group_id'))[:12]}" if body.get("group_id") else "私聊"
         try:
             ctx = ToolContext.from_body(body)
             args = body.get("args") or {}
@@ -87,7 +101,9 @@ def create_router(
                 raise ToolError("args 必须是对象")
             result = await spec.run(ctx, args)
         except ToolError as e:
+            event_log.record("tools", "warn", name, f"{who}（{where}）没做成：{e}")
             return JSONResponse({"ok": False, "message": str(e)})
+        event_log.record("tools", "ok", name, f"{who}（{where}）{_brief(args)}")
         return JSONResponse({"ok": True, **result})
 
     return router

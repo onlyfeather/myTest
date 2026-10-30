@@ -105,6 +105,7 @@ def create_router(
     disabled_reason: Callable[[], str] | None = None,
     guard: LoginGuard | None = None,
     sessions: Sessions | None = None,
+    status: Callable[[], dict[str, Any]] | None = None,
 ) -> APIRouter:
     def reason() -> str:
         if password():
@@ -381,6 +382,56 @@ def create_router(
         except KeyError:
             return error(404, "没有这个账号")
         return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------ 列表管理（比如 Pixiv 关注的作者）
+
+    @router.post("/api/manager/{section_id}/items", include_in_schema=False)
+    async def manager_items(section_id: str, request: Request) -> JSONResponse:
+        # 用 POST：会用保存的 Cookie 去请求外部接口
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            title = store.manager(section_id).title
+        except KeyError:
+            return error(404, "这个分区没有列表")
+        try:
+            data = await store.manager_items(section_id)
+        except Exception as e:
+            return JSONResponse({"ok": False, "message": describe_exception(title, e)})
+        return JSONResponse({"ok": True, **data}, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/manager/{section_id}/action/{action}", include_in_schema=False)
+    async def manager_action(section_id: str, action: str, request: Request) -> JSONResponse:
+        if not authed(request):
+            return error(401, "请先登录")
+        if not same_origin_write(request):
+            return error(403, "请求来源不正确")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            return error(400, "请求格式不正确")
+        try:
+            title = store.manager(section_id).title
+            message = await store.run_manager_action(section_id, action[:32], str(body.get("id") or ""),
+                                                     body.get("value"))
+        except KeyError:
+            return error(404, "没有这个操作")
+        except ValueError as e:
+            return JSONResponse({"ok": False, "message": str(e) or "填写的内容不正确"})
+        except Exception as e:
+            return JSONResponse({"ok": False, "message": describe_exception(title, e)})
+        return JSONResponse({"ok": True, "message": message})
+
+    @router.get("/api/status", include_in_schema=False)
+    async def get_status(request: Request) -> JSONResponse:
+        if not authed(request):
+            return error(401, "请先登录")
+        data = status() if status else {"sections": [], "logs": [], "tools": []}
+        return JSONResponse({"ok": True, **data}, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/settings/{section_id}/test", include_in_schema=False)
     async def test_section(section_id: str, request: Request) -> JSONResponse:

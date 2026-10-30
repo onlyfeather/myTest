@@ -88,6 +88,11 @@ class Sources:
         health = self._health.get(platform)
         return health is not None and self._clock() >= health.open_until
 
+    def health(self, platform: str) -> tuple[int, float]:
+        """(连续失败次数, 还要停用几秒)。给运行状态页看。"""
+        health = self._health.get(platform) or _Health()
+        return health.failures, max(0.0, health.open_until - self._clock())
+
     def _ok(self, platform: str) -> None:
         self._health[platform] = _Health()
 

@@ -327,11 +327,13 @@ async def tool_pixiv_search(ctx: ToolContext, args: dict[str, Any]) -> dict[str,
         raise ToolError("缺少搜索标签")
     tags = params.display_tags
     target = await _pixiv_target(ctx)
+    # 和群里的「搜图」共用去重记录：凛音找图也不会发群里最近发过的
+    scope = f"group:{ctx.group_id}" if ctx.group_id else f"private:{ctx.user_id}"
 
     async def job():
         try:
             async with get_pixiv_spider() as spider:
-                result = await search_images(spider, params)
+                result = await search_images(spider, params, scope)
             if not result.ok:
                 await send(ctx, result.message)
                 return

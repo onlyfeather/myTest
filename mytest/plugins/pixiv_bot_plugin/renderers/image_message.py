@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 from pathlib import Path
 from typing import Any, List, Optional
@@ -9,6 +10,7 @@ from nonebot import get_driver, logger
 from nonebot_plugin_alconna.uniseg import Image, UniMessage
 
 from ..common import MAX_IMAGES_PER_MESSAGE
+from . import gallery
 
 bot_logger = logger
 
@@ -199,7 +201,87 @@ def _build_image_text(image: dict, title: str, index: int | None = None, total: 
         message_text += f" (ID: {user_id})"
     message_text += f"\n🆔 图片ID: {image_id}\n"
     message_text += f"🏷️ 标签: {tags_text}"
+    if image.get("bookmarkCount"):
+        message_text += f"\n❤️ 收藏: {image['bookmarkCount']}"
+        if image.get("quality_score") is not None:
+            message_text += f"　质量分: {image['quality_score']}"
     return message_text
+
+
+async def _download_all(urls: List[str]) -> List[tuple[str, bytes]]:
+    """按顺序下载，最多同时 4 张。下载失败的页跳过。"""
+    sem = asyncio.Semaphore(4)
+
+    async def one(index: int, url: str):
+        async with sem:
+            image = await _download_image_for_send(url)
+        if image is None or not image.raw:
+            return None
+        return gallery.page_name(index, url, len(urls)), bytes(image.raw)
+
+    results = await asyncio.gather(*(one(i, u) for i, u in enumerate(urls, 1)))
+    return [r for r in results if r]
+
+
+def _destination(target: Any) -> tuple[str, str] | None:
+    """(group / private, 号码)。target 为空时用当前事件。"""
+    if target is not None:
+        if getattr(target, "private", False):
+            return "private", str(target.id)
+        return "group", str(target.id)
+    try:
+        from nonebot.adapters.onebot.v11 import GroupMessageEvent
+        from nonebot.matcher import current_event
+
+        event = current_event.get()
+    except LookupError:
+        return None
+    if isinstance(event, GroupMessageEvent):
+        return "group", str(event.group_id)
+    return "private", event.get_user_id()
+
+
+async def _upload_file(target: Any, name: str, data: bytes) -> None:
+    from nonebot import get_bots
+    from nonebot.adapters.onebot.v11 import Bot
+
+    where = _destination(target)
+    bot = next((b for b in get_bots().values() if isinstance(b, Bot)), None)
+    if where is None or bot is None:
+        raise RuntimeError("找不到要发到哪里")
+    file = "base64://" + base64.b64encode(data).decode()
+    kind, number = where
+    if kind == "group":
+        await bot.call_api("upload_group_file", group_id=int(number), file=file, name=name)
+    else:
+        await bot.call_api("upload_private_file", user_id=int(number), file=file, name=name)
+
+
+async def send_gallery_archive(image: dict, urls: List[str], title: str, target: Any = None) -> bool:
+    """多页作品：前几页当预览图发出来，所有页打包成压缩包上传。成功返回 True；失败时由调用方退回逐张发。"""
+    urls = urls[: gallery.MAX_ZIP_PAGES]
+    pages = await _download_all(urls)
+    if not pages:
+        return False
+    data = gallery.build_zip(pages)
+    if len(data) > gallery.MAX_ZIP_BYTES:
+        bot_logger.info(f"作品 {image.get('id')} 打包后 {len(data) // 1024 // 1024} MB，太大，不发压缩包")
+        return False
+    name = gallery.archive_name(image)
+    total = image.get("pageCount") or len(urls)
+    preview = UniMessage.text(title + "\n")
+    for page_name_, raw in pages[: gallery.MAX_INLINE_PAGES]:
+        preview = preview + Image(raw=raw, name=page_name_)
+    note = f"\n📦 共 {total} 页，这里是前 {min(len(pages), gallery.MAX_INLINE_PAGES)} 页预览；全部打包成压缩包「{name}」发在群文件里"
+    if len(pages) < len(urls):
+        note += f"（有 {len(urls) - len(pages)} 页下载失败）"
+    try:
+        await (preview + UniMessage.text(note)).send(target=target)
+        await _upload_file(target, name, data)
+    except Exception as e:
+        bot_logger.warning(f"作品 {image.get('id')} 压缩包发送失败，改为逐张发：{type(e).__name__}: {e}")
+        return False
+    return True
 
 
 async def send_images_with_info(images: List[dict], title: str, target: Any = None):
@@ -222,14 +304,17 @@ async def send_images_with_info(images: List[dict], title: str, target: Any = No
             continue
 
         urls = extract_image_urls(image)
-        if len(urls) > MAX_IMAGES_PER_MESSAGE:
-            bot_logger.info(
-                f"第 {index} 张图片包含 {len(urls)} 个URL，"
-                f"单次消息仅发送前 {MAX_IMAGES_PER_MESSAGE} 个"
-            )
-            urls = urls[:MAX_IMAGES_PER_MESSAGE]
+        total_pages = len(urls)
+        if total_pages > gallery.MAX_INLINE_PAGES:
+            info = _build_image_text(image, title, index, len(images_list))
+            if await send_gallery_archive(image, urls, info, target):
+                continue
+        # 一条消息最多带 MAX_INLINE_PAGES 张（和压缩包的预览一样多）
+        urls = urls[: gallery.MAX_INLINE_PAGES]
 
         message_text = _build_image_text(image, title, index, len(images_list))
+        if total_pages > len(urls):
+            message_text += f"\n📑 共 {total_pages} 页，这里只发了前 {len(urls)} 页"
 
         try:
             if urls:

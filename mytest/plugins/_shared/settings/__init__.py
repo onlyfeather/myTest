@@ -14,6 +14,8 @@ from typing import Any
 from .registry import (
     AccountPanel,
     FileSlot,
+    ItemManager,
+    ManagerAction,
     Picker,
     SectionView,
     SettingField,
@@ -25,6 +27,8 @@ from .registry import (
 __all__ = [
     "AccountPanel",
     "FileSlot",
+    "ItemManager",
+    "ManagerAction",
     "Picker",
     "SectionView",
     "SettingField",
