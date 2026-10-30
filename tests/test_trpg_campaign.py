@@ -146,7 +146,7 @@ def test_start(campaigns, store):
     c, module = campaigns.start(GROUP, OPENER)
     assert (c.phase, c.scene, c.round) == (RUNNING, "s1", 1)
     npcs = [tuple(r) for r in store.npcs(c.id)]
-    assert npcs == [("n1", "friendly", "s1", 0)]
+    assert npcs == [("n1", "friendly", "s1", 0, 0)]
     with pytest.raises(CampaignError, match="已经开始"):
         campaigns.start(GROUP, OPENER)
 
@@ -273,6 +273,21 @@ def test_transaction_rolls_back(store, campaigns):
             store.update_campaign(db, c.id, 0, scene="s2")
             raise RuntimeError("boom")
     assert campaigns.get(c.id) == before and store.flags(c.id) == set()
+
+
+def test_old_database_gets_new_columns(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE campaign_npc (campaign_id INTEGER NOT NULL, npc TEXT NOT NULL, attitude TEXT NOT NULL,"
+               " location TEXT NOT NULL DEFAULT '', appeared INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (campaign_id, npc))")
+    db.execute("INSERT INTO campaign_npc VALUES (1, 'n1', 'neutral', 's1', 1)")
+    db.commit()
+    db.close()
+    s = Store(path)
+    assert [tuple(r) for r in s.npcs(1)] == [("n1", "neutral", "s1", 1, 0)]
+    s.close()
 
 
 def test_store_rejects_unknown_columns(store, campaigns):

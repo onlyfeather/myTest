@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 -- 上传的模组（插件自带的模组不进这张表，直接读文件）
@@ -109,9 +109,55 @@ CREATE TABLE IF NOT EXISTS campaign_npc (
     attitude TEXT NOT NULL,
     location TEXT NOT NULL DEFAULT '',     -- 所在场景，空表示还没出现在任何场景
     appeared INTEGER NOT NULL DEFAULT 0,   -- 调查员见过没有
+    secret_told INTEGER NOT NULL DEFAULT 0, -- 秘密已经当面说出来了（之后叙述里出现他的剧透关键词不算漏）
     PRIMARY KEY (campaign_id, npc)
 );
+
+-- 掷出的骰。只插入，永不修改：孤注一掷、花幸运都另记一行
+CREATE TABLE IF NOT EXISTS round_roll (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    round_no INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,                    -- check / push / luck / sanity / idea
+    skill TEXT NOT NULL,
+    value INTEGER NOT NULL,
+    difficulty TEXT NOT NULL DEFAULT 'regular',
+    bonus INTEGER NOT NULL DEFAULT 0,
+    roll INTEGER NOT NULL,
+    target INTEGER NOT NULL,
+    level TEXT NOT NULL,
+    passed INTEGER NOT NULL,
+    object TEXT NOT NULL DEFAULT '',       -- 检定的对象，判断重复检定用
+    summary TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS round_roll_round ON round_roll(campaign_id, round_no);
+
+CREATE TABLE IF NOT EXISTS campaign_event (
+    campaign_id INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    round INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, event, round)
+);
+
+-- 模型调用和其他排查用的记录。visibility：kp（含秘密）/ public
+CREATE TABLE IF NOT EXISTS log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    round_no INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT 'kp',
+    data TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS log_campaign ON log(campaign_id, id);
 """
+
+# 旧版本建的表缺的列：(表, 列, 定义)
+MIGRATIONS = (
+    ("campaign_npc", "secret_told", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 CAMPAIGN_COLUMNS = (
     "id", "group_id", "module_id", "module_title", "phase", "opener", "scene", "round",
@@ -126,6 +172,7 @@ ACTION_COLUMNS = ("id", "round_no", "user_id", "message_id", "text", "withdrawn"
 CAMPAIGN_UPDATABLE = {"phase", "scene", "round", "game_time", "end_reason"}
 PLAYER_UPDATABLE = {"status", "left_round", "san", "luck", "hp", "items"}
 ROUND_UPDATABLE = {"phase", "clock_from", "asked_at", "collected_at", "standby", "data"}
+NPC_UPDATABLE = {"attitude", "location", "appeared", "secret_told"}
 
 
 class Store:
@@ -139,6 +186,10 @@ class Store:
         self._db.execute("PRAGMA busy_timeout=10000")
         with self._db:
             self._db.executescript(SCHEMA)
+            for table, column, definition in MIGRATIONS:
+                columns = {r[1] for r in self._db.execute(f"PRAGMA table_info({table})")}
+                if column not in columns:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -322,8 +373,58 @@ class Store:
         db.execute("UPDATE round_action SET withdrawn = 1 WHERE id = ?", (action_id,))
 
     def npcs(self, campaign_id: int) -> list[sqlite3.Row]:
-        return self._all("SELECT npc, attitude, location, appeared FROM campaign_npc WHERE campaign_id = ? ORDER BY rowid",
-                         (campaign_id,))
+        return self._all("SELECT npc, attitude, location, appeared, secret_told FROM campaign_npc"
+                         " WHERE campaign_id = ? ORDER BY rowid", (campaign_id,))
+
+    def update_npc(self, db: sqlite3.Connection, campaign_id: int, npc: str, **fields: Any) -> None:
+        unknown = set(fields) - NPC_UPDATABLE
+        if unknown:
+            raise ValueError(f"campaign_npc 不能改这些字段：{sorted(unknown)}")
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        db.execute(f"UPDATE campaign_npc SET {sets} WHERE campaign_id = ? AND npc = ?",
+                   (*fields.values(), campaign_id, npc))
+
+    # ---------------------------------------------------------------- 骰子、事件、记录
+
+    def insert_roll(self, db: sqlite3.Connection, campaign_id: int, round_no: int, user_id: str, kind: str, *,
+                    skill: str, value: int, difficulty: str, bonus: int, roll: int, target: int, level: str,
+                    passed: bool, object: str = "", summary: str = "", now: int) -> int:
+        cur = db.execute(
+            "INSERT INTO round_roll (campaign_id, round_no, user_id, kind, skill, value, difficulty, bonus, roll,"
+            " target, level, passed, object, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (campaign_id, round_no, user_id, kind, skill, value, difficulty, bonus, roll, target, level,
+             int(passed), object[:100], summary[:300], now),
+        )
+        return int(cur.lastrowid)
+
+    def rolls(self, campaign_id: int, since_round: int = 0) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM round_roll WHERE campaign_id = ? AND round_no >= ? ORDER BY id",
+                         (campaign_id, since_round))
+
+    def fired_events(self, campaign_id: int) -> set[str]:
+        return {r[0] for r in self._all("SELECT event FROM campaign_event WHERE campaign_id = ?", (campaign_id,))}
+
+    def fire_event(self, db: sqlite3.Connection, campaign_id: int, event: str, round_no: int) -> None:
+        db.execute("INSERT OR IGNORE INTO campaign_event (campaign_id, event, round) VALUES (?, ?, ?)",
+                   (campaign_id, event, round_no))
+
+    def add_log(self, campaign_id: int, round_no: int, kind: str, data: Any, now: int, visibility: str = "kp") -> None:
+        with self.transaction() as db:
+            db.execute("INSERT INTO log (campaign_id, round_no, kind, visibility, data, created_at)"
+                       " VALUES (?, ?, ?, ?, ?, ?)",
+                       (campaign_id, round_no, kind, visibility, json.dumps(data, ensure_ascii=False), now))
+
+    def logs(self, campaign_id: int, kind: str = "", limit: int = 100) -> list[sqlite3.Row]:
+        if kind:
+            return self._all("SELECT * FROM log WHERE campaign_id = ? AND kind = ? ORDER BY id DESC LIMIT ?",
+                             (campaign_id, kind, limit))
+        return self._all("SELECT * FROM log WHERE campaign_id = ? ORDER BY id DESC LIMIT ?", (campaign_id, limit))
+
+    def recent_rounds(self, campaign_id: int, before: int, limit: int) -> list[sqlite3.Row]:
+        """第 before 轮之前已经结算完的几轮，从新到旧。"""
+        return self._all(
+            f"SELECT {', '.join(ROUND_COLUMNS)} FROM round WHERE campaign_id = ? AND no < ? AND phase = 'done'"
+            " ORDER BY no DESC LIMIT ?", (campaign_id, before, limit))
 
     def insert_npc(self, db: sqlite3.Connection, campaign_id: int, npc: str, attitude: str, location: str) -> None:
         db.execute("INSERT OR IGNORE INTO campaign_npc (campaign_id, npc, attitude, location) VALUES (?, ?, ?, ?)",
