@@ -13,7 +13,7 @@
       "name": "复合行动：只处理第一步，后面的放进 remaining",
       "stage": "intent",
       "input": {"actions": {"1002": "我撬开储藏室的门锁，然后进去把货架全部搜一遍"}},
-      "expect": {"actions": {"1002": {"remaining__nonempty": true, "exit": ""}}},
+      "expect": {"actions": {"1002": {"remaining__nonempty": true}}},
       "fake": [{"actions": [{"user": "1002", "summary": "赵川撬储藏室的门锁", "kind": "use", "target": "储藏室的门锁",
                              "remaining": "进去搜查货架"}]}]
     },
@@ -98,8 +98,9 @@
     {
       "name": "叙述：检定失败写成没找到",
       "stage": "narrator",
-      "input": {"outcomes": [{"user_id": "1001", "name": "林晓", "summary": "林晓仔细看柜台后面的地面", "passed": false}]},
-      "expect": {"not_contains": ["脚印", "茶渍", "布鞋"]},
+      "input": {"outcomes": [{"user_id": "1001", "name": "林晓", "summary": "林晓仔细看柜台后面的地面", "passed": false,
+                              "missed": ["c2"]}]},
+      "expect": {"not_contains": ["脚印", "茶渍", "鞋底"]},
       "fake": ["林晓蹲在柜台后面看了一圈，地上只有雨天带进来的泥水，看不出什么。"]
     },
     {

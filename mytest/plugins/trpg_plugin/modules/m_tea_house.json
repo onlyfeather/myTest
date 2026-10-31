@@ -47,7 +47,8 @@
       "scene": "s1",
       "where": "柜台后面的地面",
       "text": "地上有几个带茶渍的脚印，从柜台一直走到储藏室门口。鞋底的花纹和老周脚上那双布鞋一模一样。",
-      "how": {"skill": "侦查", "difficulty": "regular"}
+      "how": {"skill": "侦查", "difficulty": "regular"},
+      "spoiler_words": ["茶渍", "脚印", "鞋印", "鞋底"]
     },
     {
       "id": "c3",

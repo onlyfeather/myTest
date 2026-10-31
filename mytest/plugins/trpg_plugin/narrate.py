@@ -108,6 +108,23 @@ def _outcome_line(m: Module, o: Outcome) -> str:
 # ---------------------------------------------------------------- ⑥ 检查
 
 
+def missed_hints(text: str, s: Situation, o: Outcome, allowed: str = "") -> list[str]:
+    """检定失败时，叙述里出现了这次没拿到的线索的关键词（比如找脚印失败，却写了地上的茶渍）。
+
+    这一轮本来就公开的文字（场景描述、NPC 外貌、已揭示的线索）里出现过的词不算，免得误伤。
+    """
+    words: set[str] = set()
+    for cid in o.missed:
+        clue = s.module.clue(cid)
+        if clue is not None:
+            words.update(clue.spoiler_words)
+    if not words:
+        return []
+    revealed = s.revealed | {c for c in o.clues}
+    public = "\n".join(public_texts(s, revealed, set()))
+    return sorted(w for w in words if w in text and w not in allowed and w not in public)
+
+
 def check_narration(text: str, s: Situation, res: Resolution, words: set[str], limit: int) -> list[str]:
     problems = []
     allowed = "\n".join(o.speech for o in res.outcomes)  # 玩家自己说出口的猜测不算漏
@@ -120,6 +137,11 @@ def check_narration(text: str, s: Situation, res: Resolution, words: set[str], l
         if bypass:
             names = "、".join(o.name for o in failed)
             problems.append(f"{names} 的检定失败了，不要用「{'」「'.join(bypass)}」这样的写法把失败写成有收获")
+        for o in failed:
+            hinted = missed_hints(text, s, o, allowed)
+            if hinted:
+                problems.append(f"{o.name} 的检定失败了，没发现东西，不要描写「{'」「'.join(hinted)}」这类细节，"
+                                "那正是他没找到的线索。只写他没看出什么")
     m = s.module
     present = set(m.scene(res.scene_after).npcs) | set(m.scene(res.scene_before).npcs)
     for n in m.npcs:

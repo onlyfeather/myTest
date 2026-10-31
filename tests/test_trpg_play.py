@@ -80,6 +80,44 @@ def test_check_narration_rules(game):
     assert any("太长" in p for p in check_narration("雨" * 500, s, failed, words, 260))
 
 
+def test_failed_check_must_not_hint_at_missed_clue(game):
+    """真模型写过的：找脚印失败，叙述里却写了「几处陈年茶渍」。要打回重写。"""
+    campaigns = game[0]
+    started(game)
+    s = situation(campaigns, campaigns.active(GROUP).id, {}, ())
+    words = forbidden_words(s.module, set(), set(), [s.module.intro])
+    failed = _res([Outcome(LIN, "林晓", "林晓看柜台后面的地面", passed=False, missed=["c2"])])
+    real = ("林晓绕到柜台后面，俯下身仔细打量着脚下的地面。除了平日里来回踩踏留下的浮灰与几处陈年茶渍，"
+            "你反复看了几遍，并没有看出任何特别的名堂来。")
+    problems = check_narration(real, s, failed, words, 260)
+    assert any("茶渍" in p and "没找到的线索" in p for p in problems), problems
+    fine = "林晓蹲下来，在柜台后面看了好一会儿，没看出什么名堂。"
+    assert check_narration(fine, s, failed, words, 260) == []
+    # 布鞋写在老周的公开外貌里，不算露馅
+    assert check_narration(fine + "老周穿着旧布鞋站在一旁。", s, failed, words, 260) == []
+    # 成功了就可以写
+    passed = _res([Outcome(LIN, "林晓", "林晓看地面", passed=True, clues=["c2"])])
+    assert not any("没找到" in p for p in check_narration(s.module.clue("c2").text, s, passed, words, 260))
+    # 玩家自己说了「茶渍」，叙述照着说不算
+    said = _res([Outcome(LIN, "林晓", "林晓看地面", passed=False, missed=["c2"], speech="地上是不是有茶渍")])
+    assert not any("没找到" in p for p in check_narration("地上是不是有茶渍？林晓看了看，没看出什么。", s, said, words, 260))
+
+
+def test_missed_clue_recorded_on_failed_check(game):
+    campaigns, rounds, engine, brain, rng, clock = game
+    started(game, (LIN, "林晓"))
+    brain.add("intent", intent((LIN, "林晓看地面", "investigate", {"target": "地面"})))
+    brain.add("arbiter", {"rulings": [ruling(LIN, True, skill="侦查", difficulty="regular", object="地面",
+                                             on_success={"clues": ["c2"]})]})
+    brain.add("narrator", "林晓在地上看到几个带茶渍的脚印。", "林晓蹲下看了一圈，没看出什么名堂。")
+    rng.d100(90)
+    act(game, LIN, "我看看地上", 1)
+    out = settle(game)
+    assert out[0] == "林晓蹲下看了一圈，没看出什么名堂。", "第一次写了脚印，被打回重写"
+    retry = [p for st, p in brain.calls if st == "narrator"][1]["messages"][-1]["content"]
+    assert "没找到的线索" in retry
+
+
 def test_absent_npc_cannot_appear(game):
     campaigns = game[0]
     started(game)

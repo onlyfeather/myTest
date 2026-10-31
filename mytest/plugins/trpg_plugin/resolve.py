@@ -382,6 +382,7 @@ class Outcome:
     npc_reply: str = ""
     secret_told: bool = False
     fail_text: str = ""
+    missed: list[str] = field(default_factory=list)  # 检定失败没拿到的线索 id（叙述里不能露出它的细节）
     overreach: str = ""
     speech: str = ""
     push_risk: str = ""
@@ -423,6 +424,8 @@ def outcome_from(s: Situation, uid: str, intent: dict, r: dict, check: SkillChec
             o.push_risk = r.get("push_risk") or ""
             o.can_push = not push_problem(check)
             o.luck_cost = luck_cost(check, p.luck)
+            got = set(result.get("clues", []))
+            o.missed = [c for c in (r.get("on_success") or {}).get("clues", []) if c not in got and c not in s.revealed]
     else:
         result = {"clues": r.get("auto_clues", []), "flags": r.get("flags", []), "exit": r.get("exit", ""),
                   "npc_reply": r.get("npc_reply", ""), "secret_told": r.get("secret_told", False)}
