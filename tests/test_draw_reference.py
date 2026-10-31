@@ -210,3 +210,31 @@ def test_qq_image_host_allowlist(url, ok):
 def test_download_rejects_disallowed_host():
     with pytest.raises(ServiceError, match="QQ"):
         asyncio.run(qq_images.download("http://127.0.0.1/x"))
+
+
+def test_download_ignores_env_proxy(monkeypatch):
+    """QQ 图片服务器在国内，固定直连：容器环境变量里的代理挂了也不影响下载参考图。"""
+    import httpx
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://does-not-exist.invalid:7890")
+    monkeypatch.setenv("HTTP_PROXY", "http://does-not-exist.invalid:7890")
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=b"\x89PNG-data")
+
+    url = "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=x"
+    data = asyncio.run(qq_images.download(url, transport=httpx.MockTransport(handler)))
+    assert data == b"\x89PNG-data" and seen == [url]
+
+    created = []
+    real = httpx.AsyncClient.__init__
+
+    def spy(self, *args, **kwargs):
+        created.append(kwargs.get("trust_env"))
+        real(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", spy)
+    asyncio.run(qq_images.download(url, transport=httpx.MockTransport(handler)))
+    assert created == [False], "不读环境变量里的代理"

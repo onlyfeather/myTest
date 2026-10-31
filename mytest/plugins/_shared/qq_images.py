@@ -53,11 +53,13 @@ def host_allowed(url: str) -> bool:
     )
 
 
-async def download(url: str, *, timeout: float = 30.0) -> bytes:
+async def download(url: str, *, timeout: float = 30.0, transport: httpx.AsyncBaseTransport | None = None) -> bytes:
     if not host_allowed(url):
         raise ServiceError("只能使用 QQ 里发送的图片")
     # 不跟随跳转：跳转目标可能不在白名单里。
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0), follow_redirects=False) as client:
+    # QQ 的图片服务器在国内，固定直连：不读容器环境变量里的 HTTP_PROXY，代理挂了也能下载参考图
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0), follow_redirects=False,
+                                 trust_env=False, transport=transport) as client:
         async with client.stream("GET", url) as resp:
             if resp.status_code != 200:
                 raise ServiceError(f"图片下载失败（HTTP {resp.status_code}），图片可能已过期，请重新发送")
