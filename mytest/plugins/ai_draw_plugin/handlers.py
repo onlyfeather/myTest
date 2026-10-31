@@ -7,6 +7,7 @@ from nonebot.matcher import Matcher
 from nonebot.params import RegexGroup
 from nonebot_plugin_waiter import prompt
 
+from . import multi
 from .._shared import qq_images
 from .._shared.events import group_id_of, is_superuser
 from .._shared.phrases import pick
@@ -30,6 +31,7 @@ USAGE = (
     "指定后端：/nai 描述、/gpt画图 描述\n"
     "尺寸：描述前加「横图」或「方图」，默认竖图\n"
     "参考图：直接带图发送，或回复一张图；加 -参考 会提示你发图\n"
+    f"多张参考图（GPT Image）：加 -多图，一张一张发，最多 {multi.MAX_IMAGES} 张，描述里用图一、图二指代\n"
     "画师串（NovelAI）：加 -画师 会询问新的画师串\n"
     "例：/nai 横图 海边的白发少女，夕阳"
 )
@@ -53,6 +55,25 @@ async def _ask_reference() -> bytes | None:
     if not urls:
         raise ServiceError("没有收到图片，已取消")
     return await qq_images.download(urls[0])
+
+
+async def _ask_multi(matcher: Matcher, attached: list[str]) -> list[bytes] | None:
+    """一张一张地收参考图（GPT Image 用）。返回图片列表；取消或超时返回 None。"""
+    first = []
+    if attached:
+        first.append(await qq_images.download(attached[0]))
+        if len(attached) > 1:
+            await matcher.send(f"指令里有 {len(attached)} 张图，只取了第一张当图一。其余的请一张一张分开发")
+
+    async def ask(text: str):
+        reply = await prompt(f"{text}（{WAIT_SECONDS} 秒内）", timeout=WAIT_SECONDS)
+        return None if reply is None else multi.reply_parts(reply)
+
+    async def say(text: str) -> None:
+        await matcher.send(text)
+
+    result = await multi.collect(ask, qq_images.download, say, first=first)
+    return None if result.cancelled else result.images
 
 
 async def _ask_artists(current: str) -> str | None:
@@ -95,7 +116,7 @@ async def handle_draw(bot: Bot, event: Event, matcher: Matcher, groups: tuple = 
     attached = qq_images.event_image_urls(event)
 
     # 先检查能不能用，免得问完参考图才发现模型不支持。
-    if (attached or req.wants_reference) and (reason := check_reference_supported(provider)):
+    if (attached or req.wants_reference or req.wants_multi) and (reason := check_reference_supported(provider)):
         await matcher.finish(reason)
     if req.wants_artist and provider != "novelai":
         await matcher.finish("-画师 只对 NovelAI 有效，GPT Image 请直接在描述里写画风")
@@ -112,9 +133,16 @@ async def handle_draw(bot: Bot, event: Event, matcher: Matcher, groups: tuple = 
         elif provider == "novelai" and (saved := artist_store.get(user_id)):
             inputs.artists = saved
 
-        if attached:
+        if req.wants_multi and provider == "novelai":
+            await matcher.send("NovelAI 只能参考一张图（多张会糅合成一个角色），这次只收一张。要用多张请用 /gpt画图")
+        if req.wants_multi and provider != "novelai":
+            images = await _ask_multi(matcher, attached)
+            if images is None:
+                await matcher.finish("已取消")
+            inputs.references.extend(images)
+        elif attached:
             inputs.references.append(await qq_images.download(attached[0]))
-        elif req.wants_reference:
+        elif req.wants_reference or req.wants_multi:
             image = await _ask_reference()
             if image is None:
                 await matcher.finish("已取消")

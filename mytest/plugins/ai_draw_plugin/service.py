@@ -6,6 +6,7 @@ from nonebot import logger
 
 from .._shared.services import gpt_image, images, model_list, novelai
 from .._shared.services.http import ServiceError
+from . import multi
 from .artists import compose
 from .config import gpt_image_proxy, gpt_image_settings, novelai_proxy, novelai_settings
 from .prompting import DrawRequest, has_chinese, to_novelai_tags
@@ -89,7 +90,8 @@ async def draw_novelai(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
 async def draw_gpt(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
     s = gpt_image_settings
     # 改图时把原图放在第一张，接口按描述修改它
-    originals = ([inputs.source] if inputs.source is not None else []) + inputs.references
+    references = inputs.references[: multi.MAX_IMAGES]
+    originals = ([inputs.source] if inputs.source is not None else []) + references
     refs = [images.normalize(img)[0] for img in originals[: gpt_image.MAX_REFERENCES]]
     size = req.size
     if inputs.source is not None:
@@ -109,7 +111,7 @@ async def draw_gpt(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
     )
     logger.info("[AI画图] GPT Image 完成：model={}, size={}, 参考图={}", s.model, req.size, len(refs))
     return DrawResult(image=image, provider="GPT Image", prompt_used=req.prompt,
-                      note=f"参考了 {len(inputs.references)} 张图" if inputs.references else "", size=size)
+                      note=multi.describe(len(references)), size=size)
 
 
 async def draw(provider: str, req: DrawRequest, inputs: DrawInputs | None = None) -> DrawResult:

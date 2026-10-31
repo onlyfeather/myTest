@@ -36,6 +36,7 @@ TRANSLATE_PROMPT = """你是 NovelAI / Danbooru 提示词助手。把用户的�
 
 # 引导式参数：只有写了这些才会追问，否则直接出图。
 FLAG_REFERENCE = "参考"  # 要一张参考图（NovelAI 用作角色参考）
+FLAG_MULTI = "多图"  # 一张一张地发几张参考图（图一、图二……，只有 GPT Image 能用上多张）
 FLAG_ARTIST = "画师"  # 询问新的画师串（仅 NovelAI）
 FLAG_STYLE = "画风"  # 角色参考时连画风一起参考（仅 NovelAI）
 FLAGS = {
@@ -47,6 +48,9 @@ FLAGS = {
     "artist": FLAG_ARTIST,
     FLAG_STYLE: FLAG_STYLE,
     "style": FLAG_STYLE,
+    FLAG_MULTI: FLAG_MULTI,
+    "多参考": FLAG_MULTI,
+    "multi": FLAG_MULTI,
 }
 # 只认独立的「-参数」，不会误伤描述里的连字符（如 x-ray、1-2 个人）。
 _FLAG_RE = re.compile(r"(?:^|\s)[-－—](" + "|".join(sorted(map(re.escape, FLAGS), key=len, reverse=True)) + r")(?=\s|$)",
@@ -70,6 +74,10 @@ class DrawRequest:
     @property
     def with_style(self) -> bool:
         return FLAG_STYLE in self.flags
+
+    @property
+    def wants_multi(self) -> bool:
+        return FLAG_MULTI in self.flags
 
 
 def parse_request(text: str) -> DrawRequest:
