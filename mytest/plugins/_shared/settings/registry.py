@@ -94,7 +94,7 @@ class AccountPanel:
 
 
 MANAGER_SCOPES = {"item", "global"}
-MANAGER_INPUTS = {"", "text", "lines"}
+MANAGER_INPUTS = {"", "text", "lines", "select"}
 MAX_MANAGER_ITEMS = 5000
 MAX_ACTION_TEXT = 5000
 MAX_ACTION_LINES = 200
@@ -107,7 +107,9 @@ class ManagerAction:
     name: str
     label: str
     scope: str = "item"  # item：每一行一个按钮；global：列表上方
-    input: str = ""  # 空：直接执行；text：一个输入框；lines：多行（item 的按钮用 item["values"][name] 预填）
+    # 空：直接执行；text：一个输入框；lines：多行（item 的按钮用 item["values"][name] 预填）；
+    # select：下拉框，选项是 item["values"][name]（列表，第一项默认选中），提交选中的那一项
+    input: str = ""
     placeholder: str = ""
     confirm: str = ""  # 不为空时先弹确认框，{title} 换成这一行的标题
     primary: bool = False
@@ -121,7 +123,8 @@ class ManagerAction:
 class ItemManager:
     """WebUI 里的「列表管理」卡片（比如 Pixiv 关注的作者）：列出条目，增删改由插件处理。
 
-    items() 返回 {"items": [{id, title, detail, link, badges, values}], "notice": "提示"}。
+    items() 返回 {"items": [{id, title, detail, link, badges, values, actions}], "notice": "提示"}。
+    actions 可选：这一行显示哪些按钮（按钮名列表）；不写就显示全部 scope="item" 的按钮。
     run(action, item_id, value) 执行按钮，返回给用户看的结果；用户填错时抛 ValueError。
     """
 
@@ -154,10 +157,10 @@ def _clean_item(raw: Any) -> dict[str, Any] | None:
         return None
     link = str(raw.get("link") or "")
     values = raw.get("values") if isinstance(raw.get("values"), dict) else {}
-    return {
+    cleaned = {
         "id": str(raw["id"]).strip()[:100],
         "title": str(raw.get("title") or raw["id"])[:200],
-        "detail": str(raw.get("detail") or "")[:500],
+        "detail": str(raw.get("detail") or "")[:1000],
         # 只放行 https 链接，前端用新窗口打开
         "link": link if link.startswith("https://") else "",
         "badges": [str(b)[:30] for b in (raw.get("badges") or [])][:5],
@@ -166,11 +169,18 @@ def _clean_item(raw: Any) -> dict[str, Any] | None:
             for k, val in values.items()
         },
     }
+    if isinstance(raw.get("actions"), list):
+        cleaned["actions"] = [str(a)[:50] for a in raw["actions"]][:20]
+    return cleaned
 
 
 def _clean_action_value(spec: ManagerAction, value: Any) -> Any:
     if spec.input == "":
         return None
+    if spec.input == "select":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("请选择一项")
+        return value.strip()[:200]
     if spec.input == "text":
         if not isinstance(value, str):
             raise ValueError("请填写内容")

@@ -43,8 +43,9 @@ def section() -> SettingSection:
     return SettingSection(
         id="proxy",
         title="网络代理",
-        description="在这里填一次代理地址，「大模型」「画图」「语音合成」里把「连接方式」选成公共代理或备用代理就能用上。"
-                    "各服务原来单独填的代理继续有效（连接方式默认是「跟以前一样」）。",
+        description="在这里填一次代理地址，「大模型」「画图」「语音合成」里把「连接方式」选成公共代理或备用代理就能用上；"
+                    "各服务原来单独填的代理继续有效（连接方式默认是「跟以前一样」）。"
+                    "填了 mihomo 控制接口后，页面下方可以测速、切换节点、更新订阅。",
         order=5,
         fields=[
             SettingField("main", "公共代理", default="", placeholder="http://mihomo:7890", validate=problem,
@@ -52,6 +53,12 @@ def section() -> SettingSection:
                               "代理在宿主机上就填宿主机的内网地址，不能填 127.0.0.1（那是容器自己）"),
             SettingField("backup", "备用代理", default="", placeholder="http://mihomo:7891", validate=problem,
                          help="另一个节点或另一个代理。主代理不稳定时，把服务的连接方式改成「备用代理」就行，不用改地址"),
+            SettingField("mihomo_url", "mihomo 控制接口", default="", placeholder="http://mihomo:9090",
+                         group="mihomo", validate=controller_problem,
+                         help="填了就能在下面查看节点、测速、切换节点、更新订阅。mihomo 配置里的 external-controller "
+                              "要改成 0.0.0.0:9090（默认的 127.0.0.1 只有它自己能连）"),
+            SettingField("mihomo_secret", "控制接口密钥", type="secret", default="", group="mihomo",
+                         help="和 mihomo 配置里的 secret 一样。控制接口开放给其他容器时一定要设"),
         ],
     )
 
@@ -98,6 +105,23 @@ def problem(url: str) -> str:
         return "缺少主机名"
     if port is None:
         return "要写端口，例如 http://mihomo:7890"
+    return ""
+
+
+def controller_problem(url: str) -> str:
+    """mihomo 控制接口地址：http(s):// 开头，有主机名。"""
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return "要以 http:// 开头，例如 http://mihomo:9090"
+    if not parts.hostname:
+        return "缺少主机名，例如 http://mihomo:9090"
+    try:
+        _ = parts.port  # 端口不是数字或超出范围时抛 ValueError
+    except ValueError:
+        return "端口不对"
     return ""
 
 

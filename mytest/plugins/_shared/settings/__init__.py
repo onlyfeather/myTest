@@ -149,3 +149,92 @@ async def _test_proxies() -> str:
 
 
 settings_store.set_tester("proxy", _test_proxies)
+
+
+# ---------------------------------------------------------------- mihomo：节点和订阅
+
+
+def _mihomo():
+    from ..mihomo import Mihomo
+
+    return Mihomo(str(proxy_settings.mihomo_url), str(proxy_settings.mihomo_secret))
+
+
+def _expire_text(ts: int) -> str:
+    import time
+
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+async def _mihomo_items() -> dict[str, Any]:
+    from .. import mihomo
+
+    if not str(proxy_settings.mihomo_url).strip():
+        return {"items": [], "notice": "在上面填 mihomo 控制接口的地址并保存后，这里会列出代理组和订阅"}
+    snap = await _mihomo().snapshot()
+    rows = mihomo.items(snap, _expire_text)
+    notice = "" if any(p.vehicle == "HTTP" for p in snap.providers) else \
+        "mihomo 配置里没有订阅（proxy-providers），只能切换节点。要更新订阅，先按 docs/mihomo.md 把订阅写进配置"
+    return {"items": rows, "notice": notice}
+
+
+async def _mihomo_run(action: str, item_id: str, value: Any) -> str:
+    from .. import mihomo
+
+    client = _mihomo()
+    kind, _, name = item_id.partition(":")
+    if action == "test_all":
+        snap = await client.snapshot()
+        lines = []
+        for g in snap.groups:
+            if g.manual:
+                result = await client.test_group(g.name)
+                lines.append(f"{g.name}：{mihomo.delay_counts(g, snap, result)}")
+        return "\n".join(lines) or "没有可以测速的代理组"
+    if kind == "g":
+        snap = await client.snapshot()
+        group = next((g for g in snap.groups if g.name == name), None)
+        if group is None:
+            raise ValueError("这个代理组不在了，刷新一下")
+        if action == "test":
+            result = await client.test_group(name)
+            best = sorted(((n, d) for n, d in result.items() if n in snap.nodes), key=lambda kv: kv[1])[:3]
+            tip = "；最快：" + "、".join(f"{n} {d} ms" for n, d in best) if best else ""
+            return f"测完了：{mihomo.delay_counts(group, snap, result)}{tip}"
+        if action == "select":
+            if not group.manual:
+                raise ValueError(f"「{name}」是自动选择的组，由 mihomo 按延迟自己选，不能手动切换")
+            node = mihomo.pick_node(value, group)
+            await client.select(name, node)
+            return f"「{name}」已切换到「{node}」，马上生效"
+    if kind == "p" and action == "update":
+        await client.update_provider(name)
+        return f"订阅「{name}」已更新"
+    raise ValueError("这个按钮对这一行没有用")
+
+
+async def _test_mihomo_and_proxies() -> str:
+    lines = []
+    if str(proxy_settings.mihomo_url).strip():
+        try:
+            lines.append(f"mihomo 控制接口：连上了（{await _mihomo().version()}）")
+        except Exception as e:
+            from ..services.http import describe_exception
+
+            lines.append(f"mihomo 控制接口：{describe_exception('mihomo', e)}")
+    return "\n".join([*lines, await _test_proxies()])
+
+
+settings_store.set_tester("proxy", _test_mihomo_and_proxies)
+settings_store.set_manager("proxy", ItemManager(
+    title="节点和订阅",
+    help="来自 mihomo 的控制接口。切换节点、更新订阅都是马上生效，不用点下面的保存；mihomo 重启后会回到配置文件里的默认节点",
+    items=_mihomo_items,
+    actions=(
+        ManagerAction("test_all", "全部测速", scope="global", primary=True),
+        ManagerAction("select", "切换节点", input="select"),
+        ManagerAction("test", "测速"),
+        ManagerAction("update", "立即更新"),
+    ),
+    run=_mihomo_run,
+))

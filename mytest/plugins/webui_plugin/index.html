@@ -681,7 +681,8 @@ function actionButton(s, action, item) {
       if (key in ms.open) delete ms.open[key];
       else {
         const preset = item?.values?.[action.name];
-        ms.open[key] = Array.isArray(preset) ? preset.join("\n") : (preset || "");
+        if (action.input === "select") ms.open[key] = Array.isArray(preset) && preset.length ? preset[0] : "";
+        else ms.open[key] = Array.isArray(preset) ? preset.join("\n") : (preset || "");
       }
       renderMain();
       document.getElementById("mi-" + key)?.focus();
@@ -695,13 +696,21 @@ function actionInput(s, action, item) {
   if (!(key in ms.open)) return null;
   const attrs = { id: "mi-" + key, placeholder: action.placeholder || null, "aria-label": action.label,
     spellcheck: "false", value: ms.open[key], oninput: (e) => { ms.open[key] = e.target.value; } };
-  const field = action.input === "lines" ? h("textarea", attrs) : h("input", { ...attrs, type: "text" });
+  let field;
+  if (action.input === "select") {
+    const options = item?.values?.[action.name] || [];
+    field = h("select", { id: "mi-" + key, "aria-label": action.label, onchange: (e) => { ms.open[key] = e.target.value; } },
+      options.map((o) => h("option", { value: o, selected: o === ms.open[key] ? "" : null }, o)));
+  } else field = action.input === "lines" ? h("textarea", attrs) : h("input", { ...attrs, type: "text" });
   return h("div", { class: "stack", style: "margin-top:8px" }, field,
     h("div", { class: "inline" },
       h("button", { class: "btn primary", type: "button", disabled: !!ms.busy,
         onclick: () => runManager(s, action, item, ms.open[key]) }, "确定"),
       h("button", { class: "btn", type: "button", onclick: () => { delete ms.open[key]; renderMain(); } }, "取消")));
 }
+
+// 条目可以只列出自己能用的按钮（item.actions）；没列就显示全部
+const itemActions = (actions, item) => Array.isArray(item.actions) ? actions.filter((a) => item.actions.includes(a.name)) : actions;
 
 function managerCard(s) {
   const m = s.manager;
@@ -726,8 +735,8 @@ function managerCard(s) {
       h("div", { class: "meta" }, item.badges.map((b) => h("span", { class: "badge" }, b)))),
     h("div", {},
       item.detail ? h("div", { class: "help", style: "margin-top:0" }, item.detail) : null,
-      h("div", { class: "inline", style: "margin-top:8px;flex-wrap:wrap" }, rowActions.map((a) => actionButton(s, a, item))),
-      rowActions.map((a) => actionInput(s, a, item)))))),
+      h("div", { class: "inline", style: "margin-top:8px;flex-wrap:wrap" }, itemActions(rowActions, item).map((a) => actionButton(s, a, item))),
+      itemActions(rowActions, item).map((a) => actionInput(s, a, item)))))),
     matched.length > shown.length ? h("div", { class: "inline", style: "justify-content:center;margin-top:12px" },
       h("button", { class: "btn", type: "button", onclick: () => { ms.shown += MANAGER_PAGE; renderMain(); } },
         `再显示 ${Math.min(MANAGER_PAGE, matched.length - shown.length)} 个（还有 ${matched.length - shown.length} 个）`)) : null);
