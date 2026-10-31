@@ -75,6 +75,23 @@ main { padding: 32px clamp(16px, 4vw, 48px) 120px; max-width: 880px; width: 100%
 .row label.name { font-weight: 500; padding-top: 7px; }
 .row .meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .help { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+/* 配置项分组：可以折叠 */
+details.group { border-top: 1px solid var(--line); }
+.card > details.group:first-child { border-top: 0; }
+details.group > .row, details.group + .row { border-top: 1px solid var(--line); }
+details.group > summary {
+  list-style: none; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px;
+  padding: 11px 20px; background: var(--bg); font-weight: 600; font-size: 13.5px;
+}
+details.group > summary::-webkit-details-marker { display: none; }
+details.group > summary::before {
+  content: ""; flex: none; border-left: 5px solid var(--muted);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .15s;
+}
+details.group[open] > summary::before { transform: rotate(90deg); }
+details.group > summary:hover { color: var(--accent); }
+details.group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+details.group > summary .gmeta { display: flex; gap: 6px; font-weight: 400; }
 .err { color: var(--danger); font-size: 12.5px; margin-top: 6px; }
 .badge { font-size: 11.5px; padding: 1px 7px; border-radius: 99px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
 .badge.saved { color: var(--accent); border-color: transparent; background: var(--accent-soft); }
@@ -410,6 +427,55 @@ function fieldRow(f) {
       } }, f.env.length ? "恢复为 .env / 默认值" : "恢复默认值") : null));
 }
 
+/* 配置项按 group 分组，相邻、同名的放进一个可折叠的块；没有 group 的照常一行一行排。 */
+const GROUPS_KEY = "mytest-webui-groups"; // localStorage：分区 id/分组名 → 是否展开
+
+function fieldsCard(s) {
+  const blocks = [];
+  let current = null;
+  for (const f of s.fields) {
+    if (!f.group) { blocks.push(fieldRow(f)); current = null; continue; }
+    if (!current || current.name !== f.group) { current = { name: f.group, fields: [] }; blocks.push(current); }
+    current.fields.push(f);
+  }
+  return h("div", { class: "card" }, blocks.map((b) => b instanceof Node ? b : groupBlock(s, b)));
+}
+
+function savedGroups() {
+  try { return JSON.parse(localStorage.getItem(GROUPS_KEY) || "{}"); } catch (e) { return {}; }
+}
+
+function rememberGroup(key, open) {
+  const all = savedGroups();
+  all[key] = open;
+  try { localStorage.setItem(GROUPS_KEY, JSON.stringify(all)); } catch (e) { /* 浏览器不让存就算了 */ }
+}
+
+const hasValue = (f) => f.type === "secret" ? !!f.has_value
+  : Array.isArray(f.value) ? f.value.length > 0
+  : f.value !== "" && f.value !== null && f.value !== undefined;
+const touched = (f) => f.key in state.draft || state.reset.has(f.key) || !!state.errors[f.key];
+
+function groupBadges(fields) {
+  if (fields.some((f) => state.errors[f.key])) return [h("span", { class: "badge", style: "color:var(--danger)" }, "有错误")];
+  if (fields.some((f) => f.key in state.draft || state.reset.has(f.key))) return [h("span", { class: "badge saved" }, "未保存")];
+  if (!fields.some(hasValue)) return [h("span", { class: "badge" }, "未填写")];
+  return [];
+}
+
+function groupBlock(s, g) {
+  const key = s.id + "/" + g.name;
+  const saved = savedGroups()[key];
+  // 有没保存的修改、有错误时一定展开，免得藏起来；否则按上次的选择，第一次看时有内容的展开、全空的收起
+  const open = g.fields.some(touched) || (saved === undefined ? g.fields.some(hasValue) : saved);
+  return h("details", {
+    class: "group", open, "data-keys": g.fields.map((f) => f.key).join(","),
+    ontoggle: (e) => rememberGroup(key, e.target.open),
+  },
+    h("summary", {}, h("span", {}, g.name), h("span", { class: "gmeta" }, groupBadges(g.fields))),
+    g.fields.map(fieldRow));
+}
+
 /* ---------------- 选择页（比如音色库） ---------------- */
 const pickerState = {}; // 选择页 id → { query, mine, language, page, result }
 const currentPicker = () => state.current?.startsWith(PICKER)
@@ -565,7 +631,7 @@ function renderMain() {
     h("div", { class: "head" },
       h("div", {}, h("h2", {}, s.title), s.description ? h("p", {}, s.description) : null),
       testBtn),
-    h("div", { class: "card" }, s.fields.map(fieldRow)),
+    fieldsCard(s),
     (s.files || []).length ? h("div", { class: "card", style: "margin-top:16px" }, s.files.map((f) => fileRow(s, f))) : null,
     s.accounts ? accountCard(s) : null,
     s.manager ? managerCard(s) : null,
@@ -794,6 +860,11 @@ function updateChrome() {
     const row = document.getElementById("f-" + f.key)?.closest(".row");
     const meta = row?.querySelector(".meta");
     if (meta) meta.replaceChildren(...[sourceBadge(f)].filter(Boolean));
+  });
+  if (s) document.querySelectorAll("details.group").forEach((d) => {
+    const keys = (d.dataset.keys || "").split(",");
+    const meta = d.querySelector(":scope > summary .gmeta");
+    if (meta) meta.replaceChildren(...groupBadges(s.fields.filter((f) => keys.includes(f.key))));
   });
 }
 
