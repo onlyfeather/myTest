@@ -68,6 +68,8 @@ class SettingField:
     placeholder: str = ""
     # 为 True 时 WebUI 显示「获取列表」按钮，可选项由 set_options_provider 注册的函数提供。
     fetchable: bool = False
+    # 类型转换之后再检查一次：返回错误说明，没问题返回空字符串（比如代理地址的格式）。
+    validate: Callable[[Any], str] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.type not in FIELD_TYPES:
@@ -528,6 +530,11 @@ class SettingsStore:
                 clean[key] = coerce(spec, value)
             except ValueError as e:
                 errors[key] = str(e)
+                continue
+            if spec.validate is not None:
+                message = spec.validate(clean[key])
+                if message:
+                    errors[key] = message
         for key in reset:
             if key not in known:
                 errors[key] = "未知的配置项"

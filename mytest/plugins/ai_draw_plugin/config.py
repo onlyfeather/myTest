@@ -1,4 +1,5 @@
 from .._shared.services import gpt_image, novelai
+from .._shared import proxy
 from .._shared.settings import SettingField, SettingSection, register
 
 PROVIDERS = (("novelai", "NovelAI"), ("gpt", "GPT Image"))
@@ -34,13 +35,8 @@ draw_settings = register(
                 help="每行一个群号，留空表示所有群都能用",
             ),
             SettingField("allow_private", "允许私聊使用", type="bool", default=True),
-            SettingField(
-                "proxy",
-                "代理",
-                default="",
-                placeholder="http://mihomo:7890",
-                help="NovelAI 和 GPT Image 共用；留空表示直连",
-            ),
+            proxy.mode_field(),
+            proxy.custom_field("NovelAI 和 GPT Image 共用。连接方式选「用下面单独填的代理」或「跟以前一样」时生效；留空表示直连"),
         ],
     )
 )

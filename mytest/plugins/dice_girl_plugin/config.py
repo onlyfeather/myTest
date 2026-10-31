@@ -3,7 +3,7 @@ from pathlib import Path
 
 from nonebot import get_driver, logger
 
-from .._shared.settings import SettingField, SettingSection, llm_settings, register
+from .._shared.settings import SettingField, SettingSection, llm_settings, proxy_for, register
 
 # 大模型的地址、密钥和模型在共用的「大模型」分区里，这里只放骰娘自己的开关。
 dice_settings = register(
@@ -62,7 +62,7 @@ class _Config:
 
     @property
     def ai_proxy(self) -> str:
-        return str(llm_settings.proxy)
+        return proxy_for(llm_settings)
 
     @property
     def ai_enabled(self) -> bool:

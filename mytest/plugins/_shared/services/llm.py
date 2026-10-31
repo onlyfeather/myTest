@@ -7,7 +7,7 @@ from typing import Any
 
 from nonebot import logger
 
-from ..settings import llm_settings
+from ..settings import llm_settings, proxy_for
 from . import model_list
 from .http import ServiceError, describe_http_error, http_client
 
@@ -102,7 +102,7 @@ async def chat(
     }
     if max_tokens:
         payload["max_tokens"] = max_tokens
-    async with http_client(llm_settings.proxy, llm_settings.timeout) as client:
+    async with http_client(proxy_for(llm_settings), llm_settings.timeout) as client:
         resp = await client.post(chat_url(), json=payload, headers=auth_headers())
     if resp.status_code != 200:
         raise ServiceError(describe_http_error(NAME, resp))
@@ -120,7 +120,7 @@ async def chat(
 
 async def list_models() -> list[tuple[str, str]]:
     ids = await model_list.openai_models(
-        NAME, api_key=str(llm_settings.api_key), base_url=str(llm_settings.base_url), proxy=str(llm_settings.proxy)
+        NAME, api_key=str(llm_settings.api_key), base_url=str(llm_settings.base_url), proxy=proxy_for(llm_settings)
     )
     return model_list.chat_first(ids)
 

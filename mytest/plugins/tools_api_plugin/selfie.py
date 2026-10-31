@@ -10,7 +10,7 @@ import io
 
 from .._shared.services import gpt_image, images, novelai
 from .._shared.services.http import ServiceError
-from .._shared.settings import FileSlot, SettingField, SettingSection, register
+from .._shared.settings import FileSlot, SettingField, SettingSection, proxy_for, register
 from .._shared.settings import settings_store as _store
 
 selfie_settings = register(
@@ -125,7 +125,7 @@ async def take_selfie(scene: str) -> bytes:
             size=gpt_image.SIZES["竖图"],
             quality=str(s.quality),
             moderation=str(s.moderation),
-            proxy=str(draw_settings.proxy),
+            proxy=proxy_for(draw_settings),
             timeout=float(s.timeout),
             references=[images.normalize(persona)[0]],
         )
@@ -154,7 +154,7 @@ async def take_selfie(scene: str) -> bytes:
         ),
         token=str(s.token),
         base_url=str(s.base_url),
-        proxy=str(draw_settings.proxy),
+        proxy=proxy_for(draw_settings),
         timeout=float(s.timeout),
     )
     return image

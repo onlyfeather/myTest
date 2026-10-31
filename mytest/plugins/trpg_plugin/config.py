@@ -120,7 +120,10 @@ def endpoints(role: str):
     from .._shared.settings import llm_settings
     from .ai import build_endpoints
 
-    main = {k: getattr(llm_settings, k) for k in ("base_url", "api_key", "model", "proxy", "timeout")}
+    from .._shared.settings import proxy_for
+
+    main = {k: getattr(llm_settings, k) for k in ("base_url", "api_key", "model", "timeout")}
+    main["proxy"] = proxy_for(llm_settings)
     fallbacks = [
         {k: getattr(trpg_settings, f"fallback{i}_{k}") for k in ("base_url", "api_key", "model")}
         for i in range(1, FALLBACK_SLOTS + 1)

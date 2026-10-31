@@ -1,3 +1,4 @@
+from .._shared import proxy
 from .._shared.services import fish_audio
 from .._shared.settings import SettingField, SettingSection, register
 
@@ -33,8 +34,8 @@ tts_settings = register(
             SettingField("allowed_groups", "允许的群", type="lines", default=[],
                          help="每行一个群号，留空表示所有群都能用"),
             SettingField("allow_private", "允许私聊使用", type="bool", default=True),
-            SettingField("proxy", "代理", default="", placeholder="http://mihomo:7890",
-                         help="留空表示直连"),
+            proxy.mode_field(),
+            proxy.custom_field(),
             SettingField("timeout", "超时（秒）", type="float", default=120.0, minimum=5, maximum=600),
         ],
     )

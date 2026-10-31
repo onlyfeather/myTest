@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .. import proxy as _proxy
 from .registry import (
     AccountPanel,
     FileSlot,
@@ -36,6 +37,8 @@ __all__ = [
     "SettingsStore",
     "coerce",
     "llm_settings",
+    "proxy_for",
+    "proxy_settings",
     "register",
     "settings_store",
 ]
@@ -116,13 +119,33 @@ llm_settings = register(
                 help="接口支持 response_format=json_object 时可以打开，输出更稳定",
                 env=("dice_girl_ai_json_mode",),
             ),
-            SettingField(
-                "proxy",
-                "代理",
-                default="",
-                placeholder="http://mihomo:7890",
-                help="留空表示直连",
-            ),
+            _proxy.mode_field(),
+            _proxy.custom_field(),
         ],
     )
 )
+
+# 网络代理：公共代理和备用代理，各服务按自己的「连接方式」选用。
+proxy_settings = register(_proxy.section())
+
+
+def proxy_for(view: Any) -> str:
+    """某个服务这次要用的代理（空字符串表示直连）。view 是带 proxy_mode / proxy 的配置分区；
+    没有 proxy_mode 时按「跟以前一样」处理。"""
+    mode = str(getattr(view, "proxy_mode", _proxy.AUTO) or _proxy.AUTO)
+    custom = str(getattr(view, "proxy", "") or "")
+    return _proxy.resolve(mode, custom, str(proxy_settings.main), str(proxy_settings.backup))
+
+
+async def _test_proxies() -> str:
+    lines = []
+    for label, url in (("公共代理", str(proxy_settings.main)), ("备用代理", str(proxy_settings.backup)),
+                       ("直连", "")):
+        if label != "直连" and not url.strip():
+            lines.append(f"{label}：没有填")
+            continue
+        lines.append(_proxy.report(label, url, await _proxy.probe(url)))
+    return "\n".join(lines)
+
+
+settings_store.set_tester("proxy", _test_proxies)

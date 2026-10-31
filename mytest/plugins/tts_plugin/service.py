@@ -4,6 +4,7 @@ import re
 
 from .._shared.services import fish_audio, model_list
 from .._shared.services.http import ServiceError
+from .._shared.settings import proxy_for
 from .config import tts_settings
 
 # 骰娘点评里的动作描写（括号里的内容）和表情符号读出来很怪，合成前去掉。
@@ -71,7 +72,7 @@ async def synthesize(text: str, *, superuser: bool = False) -> bytes:
         audio_format=str(s.format),
         speed=float(s.speed),
         volume=float(s.volume),
-        proxy=str(s.proxy),
+        proxy=proxy_for(s),
         timeout=float(s.timeout),
     )
 
@@ -80,7 +81,7 @@ async def search_voices(*, query: str = "", page: int = 1, mine: bool = False, l
     s = tts_settings
     return await model_list.fish_voices(
         api_key=str(s.api_key), base_url=str(s.base_url), query=query, page=page, mine=mine,
-        language=language, proxy=str(s.proxy),
+        language=language, proxy=proxy_for(s),
     )
 
 

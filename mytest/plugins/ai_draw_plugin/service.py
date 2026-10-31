@@ -6,6 +6,7 @@ from nonebot import logger
 
 from .._shared.services import gpt_image, images, model_list, novelai
 from .._shared.services.http import ServiceError
+from .._shared.settings import proxy_for
 from .artists import compose
 from .config import draw_settings, gpt_image_settings, novelai_settings
 from .prompting import DrawRequest, has_chinese, to_novelai_tags
@@ -78,7 +79,7 @@ async def draw_novelai(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
         ),
         token=str(s.token),
         base_url=str(s.base_url),
-        proxy=str(draw_settings.proxy),
+        proxy=proxy_for(draw_settings),
         timeout=float(s.timeout),
     )
     logger.info("[AI画图] NovelAI 完成：model={}, size={}, seed={}, 参考图={}, 自定义画师={}, 改图={}",
@@ -103,7 +104,7 @@ async def draw_gpt(req: DrawRequest, inputs: DrawInputs) -> DrawResult:
         size=gpt_image.SIZES[size],
         quality=str(s.quality),
         moderation=str(s.moderation),
-        proxy=str(draw_settings.proxy),
+        proxy=proxy_for(draw_settings),
         timeout=float(s.timeout),
         references=refs,
     )
@@ -124,7 +125,7 @@ async def draw(provider: str, req: DrawRequest, inputs: DrawInputs | None = None
 async def list_gpt_image_models() -> list[tuple[str, str]]:
     s = gpt_image_settings
     ids = await model_list.openai_models(
-        "GPT Image", api_key=str(s.api_key), base_url=str(s.base_url), proxy=str(draw_settings.proxy)
+        "GPT Image", api_key=str(s.api_key), base_url=str(s.base_url), proxy=proxy_for(draw_settings)
     )
     return model_list.image_only(ids)
 
@@ -132,12 +133,12 @@ async def list_gpt_image_models() -> list[tuple[str, str]]:
 async def test_novelai() -> str:
     s = novelai_settings
     return await novelai.check_subscription(
-        token=str(s.token), base_url=str(s.base_url), proxy=str(draw_settings.proxy)
+        token=str(s.token), base_url=str(s.base_url), proxy=proxy_for(draw_settings)
     )
 
 
 async def test_gpt_image() -> str:
     s = gpt_image_settings
     return await gpt_image.check_models(
-        api_key=str(s.api_key), base_url=str(s.base_url), model=str(s.model), proxy=str(draw_settings.proxy)
+        api_key=str(s.api_key), base_url=str(s.base_url), model=str(s.model), proxy=proxy_for(draw_settings)
     )
