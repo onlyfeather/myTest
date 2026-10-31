@@ -408,64 +408,79 @@ class Resolution:
     ending: str = ""  # 达成的结局 id
 
 
+def outcome_from(s: Situation, uid: str, intent: dict, r: dict, check: SkillCheck | None,
+                 taken: set[str]) -> Outcome:
+    """按检定结果（没检定时 check 为 None）取出成功或失败那一份结果。taken：这一轮已经给出去的线索。"""
+    p = s.players[uid]
+    o = Outcome(uid, p.name, intent.get("summary", ""), npc=intent.get("npc") or "",
+                overreach=intent.get("overreach") or "", speech=intent.get("speech") or "",
+                repeat=bool(r.get("repeat")), why=r.get("why") or "")
+    if check is not None:
+        o.check, o.passed = check, check.passed
+        result = (r.get("on_success") if check.passed else r.get("on_fail")) or {}
+        if not check.passed:
+            o.fail_text = result.get("text") or ""
+            o.push_risk = r.get("push_risk") or ""
+            o.can_push = not push_problem(check)
+            o.luck_cost = luck_cost(check, p.luck)
+    else:
+        result = {"clues": r.get("auto_clues", []), "flags": r.get("flags", []), "exit": r.get("exit", ""),
+                  "npc_reply": r.get("npc_reply", ""), "secret_told": r.get("secret_told", False)}
+    o.clues = [c for c in result.get("clues", []) if c not in taken and c not in s.revealed]
+    o.flags = list(result.get("flags", []))
+    for c in o.clues:
+        o.flags += [f for f in s.module.clue(c).set_flags if f not in o.flags]
+    o.npc_reply = result.get("npc_reply") or ""
+    o.secret_told = bool(result.get("secret_told")) and bool(o.npc)
+    o.moved_to = result.get("exit") or ""
+    return o
+
+
+Also = Callable[[Any, "Resolution"], None]  # (db, 结果)：和结果在同一个事务里多写一些东西
+
+
 def apply(s: Situation, intents: dict[str, dict], rulings: list[dict], now: int,
-          rng: random.Random | None = None) -> Resolution:
+          rng: random.Random | None = None, also: Also | None = None) -> Resolution:
     """掷骰并把结果写进数据库，一次事务。"""
     rng = rng or random.Random()
-    store = s.store
-    cid, rno = s.campaign.id, s.campaign.round
     by_user = {r["user"]: r for r in rulings}
     outcomes: list[Outcome] = []
-    new_flags: set[str] = set()
-    new_clues: list[tuple[str, str]] = []
-    moves: list[str] = []
+    rolls: list[tuple[str, Any, str, str]] = []
+    taken: set[str] = set()
     minutes = 0
-    told: set[str] = set()
-    rolls: list[tuple[str, SkillCheck, str, str]] = []
-
     for uid, intent in intents.items():
         p = s.players[uid]
         r = by_user.get(uid, {"needs_roll": False})
-        o = Outcome(uid, p.name, intent["summary"], npc=intent.get("npc") or "", overreach=intent.get("overreach") or "",
-                    speech=intent.get("speech") or "", repeat=bool(r.get("repeat")), why=r.get("why") or "")
+        check = None
         if r["needs_roll"]:
             skill = canonical(r["skill"])
             check = skill_check(skill, skill_value(p.sheet, skill), r.get("difficulty") or REGULAR,
                                 int(r.get("bonus") or 0), rng)
-            o.check, o.passed = check, check.passed
             rolls.append((uid, check, r.get("object") or "", "check"))
-            result = (r.get("on_success") if check.passed else r.get("on_fail")) or {}
-            if not check.passed:
-                o.fail_text = result.get("text") or ""
-                o.push_risk = r.get("push_risk") or ""
-                o.can_push = not push_problem(check)
-                o.luck_cost = luck_cost(check, p.luck)
-        else:
-            result = {"clues": r.get("auto_clues", []), "flags": r.get("flags", []), "exit": r.get("exit", ""),
-                      "npc_reply": r.get("npc_reply", ""), "secret_told": r.get("secret_told", False)}
-        o.clues = [c for c in result.get("clues", []) if c not in {x for x, _ in new_clues}]
-        new_clues += [(c, uid) for c in o.clues]
-        o.flags = list(result.get("flags", []))
-        for c in o.clues:
-            o.flags += list(s.module.clue(c).set_flags)
-        new_flags.update(o.flags)
-        o.npc_reply = result.get("npc_reply") or ""
-        o.secret_told = bool(result.get("secret_told")) and bool(o.npc)
-        if o.secret_told:
-            told.add(o.npc)
-        if result.get("exit"):
-            o.moved_to = result["exit"]
-            moves.append(result["exit"])
+        o = outcome_from(s, uid, intent, r, check, taken)
+        taken.update(o.clues)
         minutes = max(minutes, int(r.get("minutes") or 0))
         outcomes.append(o)
     for uid in s.standby:
         if uid in s.players:
             outcomes.append(Outcome(uid, s.players[uid].name, "原地待命", standby=True))
+    return commit(s, outcomes, rolls, minutes, now, rng, also=also)
 
+
+def commit(s: Situation, outcomes: list[Outcome], rolls: list[tuple[str, Any, str, str]], minutes: int, now: int,
+           rng: random.Random, *, round_no: int | None = None, also: Also | None = None) -> Resolution:
+    """把这些结果写进数据库：线索、标记、移动、NPC，再看有没有事件触发、结局达成。一次事务。"""
+    store = s.store
+    cid, rno = s.campaign.id, round_no or s.campaign.round
+    new_clues = [(c, o.user_id) for o in outcomes for c in o.clues]
+    new_flags = {f for o in outcomes for f in o.flags}
+    told = {o.npc for o in outcomes if o.secret_told}
     # 移动：大家一起行动，有人走了出口就整队移动（第一期不分队）
+    moves = [o.moved_to for o in outcomes if o.moved_to]
     scene_after = moves[0] if moves else s.campaign.scene
     flags_after = s.flags | new_flags
     revealed_after = s.revealed | {c for c, _ in new_clues}
+    rolls = list(rolls)
 
     events: list[EventOutcome] = []
     fired = store.fired_events(cid)
@@ -487,6 +502,7 @@ def apply(s: Situation, intents: dict[str, dict], rulings: list[dict], now: int,
         events.append(ev)
 
     ending = next((end.id for end in s.module.endings if end.when.met(flags_after, revealed_after, scene_after)), "")
+    res = Resolution(rno, outcomes, events, s.campaign.scene, scene_after, minutes, ending)
 
     with store.transaction() as db:
         for uid, roll, obj, kind in rolls:
@@ -512,10 +528,46 @@ def apply(s: Situation, intents: dict[str, dict], rulings: list[dict], now: int,
         for o in outcomes:
             if o.npc:
                 store.update_npc(db, cid, o.npc, appeared=1)
+        for o in outcomes:
+            if o.check is not None and o.check.luck_spent:
+                p = s.players[o.user_id]
+                store.update_player(db, cid, o.user_id, luck=max(0, p.luck - o.check.luck_spent))
         fields = {"scene": scene_after} if scene_after != s.campaign.scene else {}
         store.update_campaign(db, cid, now, **fields)
+        if also is not None:
+            also(db, res)
+    return res
 
-    return Resolution(rno, outcomes, events, s.campaign.scene, scene_after, minutes, ending)
+
+# ---------------------------------------------------------------- 存进 round.data，重启后接着叙述
+
+
+def resolution_to_dict(res: Resolution) -> dict[str, Any]:
+    def outcome(o: Outcome) -> dict[str, Any]:
+        d = {k: getattr(o, k) for k in Outcome.__dataclass_fields__ if k != "check"}
+        d["check"] = None if o.check is None else {k: getattr(o.check, k) for k in SkillCheck.__dataclass_fields__}
+        return d
+
+    return {
+        "round_no": res.round_no, "scene_before": res.scene_before, "scene_after": res.scene_after,
+        "minutes": res.minutes, "ending": res.ending,
+        "outcomes": [outcome(o) for o in res.outcomes],
+        "events": [{"event_id": e.event_id, "public": e.public, "sanity": e.sanity} for e in res.events],
+    }
+
+
+def resolution_from_dict(d: dict[str, Any]) -> Resolution:
+    outcomes = []
+    for raw in d["outcomes"]:
+        raw = dict(raw)
+        check = raw.pop("check")
+        if check is not None:
+            check["tens"] = tuple(check.get("tens") or ())
+            check = SkillCheck(**check)
+        outcomes.append(Outcome(check=check, **raw))
+    events = [EventOutcome(**e) for e in d["events"]]
+    return Resolution(d["round_no"], outcomes, events, d["scene_before"], d["scene_after"], d["minutes"],
+                      d.get("ending", ""))
 
 
 # ---------------------------------------------------------------- 一轮的前半段
@@ -551,14 +603,17 @@ def situation(campaigns: Campaigns, campaign_id: int, actions: dict[str, str], s
 
 async def resolve_round(campaigns: Campaigns, campaign_id: int, actions: dict[str, str], standby: tuple[str, ...],
                         deps: ResolveDeps, *, still_current: Callable[[], bool] | None = None,
-                        on_attempt: Callable[[str, Attempt], None] | None = None) -> tuple[Resolution, dict]:
+                        on_attempt: Callable[[str, Attempt], None] | None = None,
+                        also: Callable[[Any, Resolution, dict], None] | None = None) -> tuple[Resolution, dict]:
     """①②③④。返回（结果，各步骤的输出，存进 round.data 方便排查和恢复）。
+    also(db, 结果, 各步骤输出) 和结果在同一个事务里执行。
     模型全部失败抛 AllFailed，状态变了抛 Stale；这两种情况数据库都没有改。"""
     s = situation(campaigns, campaign_id, actions, standby)
     users = list(s.actions)
-    record = {"intent": None, "rulings": None}
+    record: dict[str, Any] = {"intent": None, "rulings": None}
+    hook = (lambda db, res: also(db, res, record)) if also is not None else None
     if not users:
-        res = apply(s, {}, [], int(deps.clock()), deps.rng)
+        res = apply(s, {}, [], int(deps.clock()), deps.rng, also=hook)
         return res, record
 
     base = [kp_context(s), players_context(s)]
@@ -583,7 +638,7 @@ async def resolve_round(campaigns: Campaigns, campaign_id: int, actions: dict[st
 
     if still_current is not None and not still_current():
         raise Stale()
-    res = apply(s, intents, rulings.value["rulings"], int(deps.clock()), deps.rng)
+    res = apply(s, intents, rulings.value["rulings"], int(deps.clock()), deps.rng, also=hook)
     return res, record
 
 

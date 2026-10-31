@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 -- 上传的模组（插件自带的模组不进这张表，直接读文件）
@@ -140,6 +140,21 @@ CREATE TABLE IF NOT EXISTS campaign_event (
     round INTEGER NOT NULL,
     PRIMARY KEY (campaign_id, event, round)
 );
+
+-- 检定失败后等玩家回答：孤注一掷 / 花幸运 / 放弃。有没回答的选择时，下一轮先不结算
+CREATE TABLE IF NOT EXISTS pending_choice (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    round_no INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    data TEXT NOT NULL,                    -- 原来的检定、裁决、意图（JSON）
+    can_push INTEGER NOT NULL,
+    luck_cost INTEGER,                     -- 花多少幸运能通过；不能花为空
+    status TEXT NOT NULL DEFAULT 'open',   -- open / working（正在处理）/ done / abandoned / expired
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pending_choice_campaign ON pending_choice(campaign_id, status);
 
 -- 模型调用和其他排查用的记录。visibility：kp（含秘密）/ public
 CREATE TABLE IF NOT EXISTS log (
@@ -419,6 +434,46 @@ class Store:
             return self._all("SELECT * FROM log WHERE campaign_id = ? AND kind = ? ORDER BY id DESC LIMIT ?",
                              (campaign_id, kind, limit))
         return self._all("SELECT * FROM log WHERE campaign_id = ? ORDER BY id DESC LIMIT ?", (campaign_id, limit))
+
+    # ---------------------------------------------------------------- 待回答的选择
+
+    def insert_choice(self, db: sqlite3.Connection, campaign_id: int, round_no: int, user_id: str, data: Any,
+                      can_push: bool, luck_cost: int | None, now: int, expires_at: int) -> None:
+        db.execute(
+            "INSERT INTO pending_choice (campaign_id, round_no, user_id, data, can_push, luck_cost, created_at, expires_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (campaign_id, round_no, user_id, json.dumps(data, ensure_ascii=False), int(can_push), luck_cost, now,
+             expires_at),
+        )
+
+    def open_choices(self, campaign_id: int | None = None) -> list[sqlite3.Row]:
+        """还没回答完的（open 和 working）。"""
+        if campaign_id is None:
+            return self._all("SELECT * FROM pending_choice WHERE status IN ('open', 'working') ORDER BY id")
+        return self._all("SELECT * FROM pending_choice WHERE campaign_id = ? AND status IN ('open', 'working')"
+                         " ORDER BY id", (campaign_id,))
+
+    def set_choice_status(self, choice_id: int, status: str, *, only_from: tuple[str, ...] = ()) -> bool:
+        """改状态；only_from 不为空时只在当前状态是其中之一时才改（防止两边同时处理）。"""
+        with self.transaction() as db:
+            if only_from:
+                marks = ", ".join("?" for _ in only_from)
+                cur = db.execute(f"UPDATE pending_choice SET status = ? WHERE id = ? AND status IN ({marks})",
+                                 (status, choice_id, *only_from))
+            else:
+                cur = db.execute("UPDATE pending_choice SET status = ? WHERE id = ?", (status, choice_id))
+            return cur.rowcount > 0
+
+    def reset_working_choices(self) -> None:
+        """重启时，处理到一半的选择回到等回答。"""
+        with self.transaction() as db:
+            db.execute("UPDATE pending_choice SET status = 'open' WHERE status = 'working'")
+
+    def public_narrations(self, campaign_id: int, limit: int) -> list[str]:
+        """最近几段发到群里的叙述，从旧到新。"""
+        rows = self._all("SELECT data FROM log WHERE campaign_id = ? AND kind = 'narration' AND visibility = 'public'"
+                         " ORDER BY id DESC LIMIT ?", (campaign_id, limit))
+        return [json.loads(r[0]).get("text", "") for r in reversed(rows)]
 
     def recent_rounds(self, campaign_id: int, before: int, limit: int) -> list[sqlite3.Row]:
         """第 before 轮之前已经结算完的几轮，从新到旧。"""

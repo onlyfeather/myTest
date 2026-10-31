@@ -256,15 +256,25 @@ async def http_transport(endpoint: Endpoint, payload: dict[str, Any]) -> Reply:
 class ModelClient:
     def __init__(self, transport: Transport = http_transport,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                 clock: Callable[[], float] = time.monotonic, mode: str = SCHEMA) -> None:
+                 clock: Callable[[], float] = time.monotonic, mode: str | Callable[[], str] = SCHEMA) -> None:
         self.transport = transport
         self.sleep = sleep
         self.clock = clock
-        self.mode = mode if mode in MODES else SCHEMA
+        self._mode = mode  # 传函数时每次调用都重新读（WebUI 里改了马上生效）
         self._modes: dict[tuple[str, str], str] = {}  # 接口不认 schema 时降级，记住
 
+    @property
+    def mode(self) -> str:
+        mode = self._mode() if callable(self._mode) else self._mode
+        return mode if mode in MODES else SCHEMA
+
     def mode_for(self, endpoint: Endpoint) -> str:
-        return self._modes.get(endpoint.key(), self.mode)
+        current = self.mode
+        downgraded = self._modes.get(endpoint.key())
+        # 降级只会往下走；设置里选了更低的一档就以设置为准
+        if downgraded is not None and MODES.index(downgraded) > MODES.index(current):
+            return downgraded
+        return current
 
     def _downgrade(self, endpoint: Endpoint) -> bool:
         current = self.mode_for(endpoint)

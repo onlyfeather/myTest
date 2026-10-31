@@ -16,6 +16,8 @@ class Caller:
     actor: Actor
     name: str  # 群名片或昵称，用自己的 .st 卡加入时当调查员名
     load_sheet: Callable[[], dict[str, int]]  # 读这个人在这个群的 .st 卡
+    waiting_choices: Callable[[], list[str]] | None = None  # 还在等谁回答孤注一掷 / 花幸运
+    retry: Callable[[int], None] | None = None  # /kp 重试
 
 
 def run(campaigns: Campaigns, command: str, arg: str, caller: Caller) -> str:
@@ -59,7 +61,10 @@ def _run(campaigns: Campaigns, command: str, arg: str, c: Caller) -> str:
     if command == "开始":
         campaign, module = campaigns.start(g, actor)
         names = "、".join(p.name for p in campaigns.players(campaign.id, ("present",)))
-        return (f"「{module.title}」开始。调查员：{names}。\n\n{module.intro}\n\n"
+        scene = module.scene(campaign.scene)
+        opening = f"{module.intro}\n\n【{scene.name}】{scene.public}"
+        campaigns.store.add_log(campaign.id, 0, "narration", {"text": opening}, campaign.updated_at, visibility="public")
+        return (f"「{module.title}」开始。调查员：{names}。\n\n{opening}\n\n"
                 "直接说你的调查员要做什么；括号里的话是场外，（KP …）是问 KP 的场外问题。")
 
     if command == "暂停":
@@ -76,7 +81,21 @@ def _run(campaigns: Campaigns, command: str, arg: str, c: Caller) -> str:
 
     if command == "kp":
         if arg in ("", "状态"):
-            return campaigns.status_text(g)
-        return "可用：/kp 状态"
+            text = campaigns.status_text(g)
+            if c.waiting_choices:
+                names = c.waiting_choices()
+                if names:
+                    text += "\n等待回答孤注一掷 / 花幸运：" + "、".join(names)
+            return text
+        if arg == "重试":
+            campaign = campaigns.active(g)
+            if campaign is None:
+                return "这个群现在没有团。"
+            if not (actor.is_manager or actor.user_id == campaign.opener):
+                return "只有开团的人或群管理员能重试。"
+            if c.retry is not None:
+                c.retry(campaign.id)
+            return "好，马上重试。"
+        return "可用：/kp 状态、/kp 重试"
 
     return ""

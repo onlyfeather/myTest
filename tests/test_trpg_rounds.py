@@ -3,7 +3,6 @@
 import pytest
 
 from mytest.plugins.trpg_plugin.campaign import LEFT, PRESENT, Actor, Campaigns, ModuleLibrary
-from mytest.plugins.trpg_plugin.play import settle_placeholder
 from mytest.plugins.trpg_plugin.rounds import COLLECTED, COLLECTING, DONE, Rounds, Timing, classify
 from mytest.plugins.trpg_plugin.store import Store
 
@@ -246,7 +245,7 @@ def test_leaving_player_is_not_waited_for(env):
 # ---------------------------------------------------------------- 进入下一轮
 
 
-def test_placeholder_settles_and_advances(env):
+def test_advance_opens_next_round_and_settles_membership(env):
     campaigns, rounds, clock = env
     campaigns.join(GROUP, Actor(SU), pregen="苏禾")
     say(env, LIN, "我看柜台", 1)
@@ -254,26 +253,25 @@ def test_placeholder_settles_and_advances(env):
     campaigns.leave(GROUP, Actor(ZHAO))
     clock.now += 60
     (cid, no), = rounds.tick(clock.now, T).collected
-    text = settle_placeholder(campaigns, rounds, cid, no, clock.now)
-    assert "第 1 轮收齐了" in text and "林晓：我看柜台\n再翻翻登记簿" in text
-    assert "「苏禾」加入了调查" in text and "「赵川」离开了" in text
+    assert rounds.merged_actions(cid, no) == {LIN: "我看柜台\n再翻翻登记簿"}
 
+    change = rounds.advance(cid, clock.now)
+    assert [p.name for p in change.entered] == ["苏禾"] and [p.name for p in change.exited] == ["赵川"]
     c = campaigns.active(GROUP)
     assert c.round == 2 and state(env).phase == COLLECTING
     assert campaigns.store.round(cid, 1)["phase"] == DONE
     assert campaigns.player(cid, SU).status == PRESENT and campaigns.player(cid, ZHAO).status == LEFT
     assert rounds.waiting_for(c) == [LIN, SU]
-    assert settle_placeholder(campaigns, rounds, cid, 1, clock.now) == "", "旧的轮次不再处理"
 
 
-def test_standby_shows_in_placeholder(env):
+def test_standby_recorded_on_round(env):
     campaigns, rounds, clock = env
     say(env, LIN, "我看柜台", 1)
     clock.now += 30 * 60
     rounds.tick(clock.now, T)
     clock.now += 12 * 3600
-    (cid, no), = rounds.tick(clock.now, T).collected
-    assert "赵川：原地待命" in settle_placeholder(campaigns, rounds, cid, no, clock.now)
+    rounds.tick(clock.now, T)
+    assert state(env).standby == (ZHAO,)
 
 
 def test_campaign_without_round_row_gets_one(env):
