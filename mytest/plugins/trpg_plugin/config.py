@@ -21,6 +21,15 @@ def _model_fields() -> list[SettingField]:
         for role, label in ROLES.items()
     ]
     fields.append(SettingField(
+        "review",
+        "叙述发出去前再审一遍",
+        type="bool",
+        default=True,
+        group="模型",
+        help="用「审查用的模型」对照秘密再检查一次叙述有没有透露玩家还不知道的东西，不合格就重写。"
+             "每轮多一次模型调用；关掉后只做关键词检查",
+    ))
+    fields.append(SettingField(
         "output_mode",
         "结构化输出方式",
         type="select",
@@ -121,6 +130,10 @@ def endpoints(role: str):
 
 def output_mode() -> str:
     return str(trpg_settings.output_mode)
+
+
+def review_enabled() -> bool:
+    return bool(trpg_settings.review)
 
 
 def _resolve_data_dir() -> Path:

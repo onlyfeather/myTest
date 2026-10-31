@@ -6,126 +6,42 @@
 
 import asyncio
 import json
-import random
 
 import pytest
 
-from mytest.plugins.trpg_plugin.ai import Endpoint, ModelClient, ModelError, Reply
-from mytest.plugins.trpg_plugin.campaign import ENDED, Actor, Campaigns, ModuleLibrary
+from mytest.plugins.trpg_plugin.ai import ModelClient, ModelError, Reply
+from mytest.plugins.trpg_plugin.campaign import ENDED, Actor
 from mytest.plugins.trpg_plugin.commands import Caller, run
 from mytest.plugins.trpg_plugin.narrate import check_narration, choice_question, safe_narration
 from mytest.plugins.trpg_plugin.play import KP_BUSY, RESOLVED, Engine
 from mytest.plugins.trpg_plugin.resolve import Outcome, Resolution, situation
-from mytest.plugins.trpg_plugin.rounds import COLLECTING, DONE, Rounds, Timing
+from mytest.plugins.trpg_plugin.rounds import COLLECTING, DONE
 from mytest.plugins.trpg_plugin.spoilers import forbidden_words, leaks
-from mytest.plugins.trpg_plugin.store import Store
 
-GROUP = "1130489499"
-LIN, ZHAO, SU = "1001", "1002", "1003"
-T = Timing(ask_after=30 * 60, standby_after=12 * 3600, settle_delay=60)
-EP = [Endpoint("主模型", "https://a/v1", "k", "m")]
-
-
-class Fixed(random.Random):
-    def __init__(self):
-        super().__init__(0)
-        self.values: list[int] = []
-
-    def d100(self, *values):
-        for v in values:
-            v %= 100
-            self.values += [v % 10, v // 10]
-
-    def randint(self, a, b):
-        value = self.values.pop(0)
-        assert a <= value <= b, (a, b, value)
-        return value
-
-
-class Brain:
-    """假模型：按环节分别排队。环节由 system 提示词的开头认出来。"""
-
-    STAGES = {"你负责理解": "intent", "你是 CoC 7 版的裁定员。你读到": "arbiter", "你是一场": "narrator",
-              "你是 CoC 7 版的裁定员。一名": "push", "你是跑团主持人": "oog"}
-
-    def __init__(self):
-        self.queues: dict[str, list] = {k: [] for k in self.STAGES.values()}
-        self.calls: list[tuple[str, dict]] = []
-
-    def add(self, stage, *items):
-        self.queues[stage] += items
-        return self
-
-    async def __call__(self, endpoint, payload):
-        system = payload["messages"][0]["content"]
-        stage = next(v for k, v in self.STAGES.items() if system.startswith(k))
-        self.calls.append((stage, payload))
-        if not self.queues[stage]:
-            raise AssertionError(f"没有给 {stage} 准备回复")
-        item = self.queues[stage].pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return Reply(item if isinstance(item, str) else json.dumps(item, ensure_ascii=False))
-
-
-async def no_sleep(_):
-    return None
-
-
-class Clock:
-    def __init__(self):
-        self.now = 1_700_000_000
-
-    def __call__(self):
-        return self.now
+from .trpg_helpers import (
+    EP,
+    GROUP,
+    LIN,
+    SU,
+    T,
+    ZHAO,
+    Fixed,
+    act,
+    cmd,
+    intent,
+    make_game,
+    no_sleep,
+    ruling,
+    settle,
+    started,
+)
 
 
 @pytest.fixture
 def game(tmp_path):
-    store = Store(tmp_path / "trpg.db")
-    clock = Clock()
-    campaigns = Campaigns(store, ModuleLibrary(store), clock)
-    rounds = Rounds(campaigns)
-    brain = Brain()
-    rng = Fixed()
-    engine = Engine(campaigns, rounds, ModelClient(brain, sleep=no_sleep), lambda role: EP, rng, clock)
-    yield campaigns, rounds, engine, brain, rng, clock
+    g, store = make_game(tmp_path)
+    yield g
     store.close()
-
-
-def cmd(campaigns, command, arg="", user=LIN, manager=False, name=""):
-    return run(campaigns, command, arg, Caller(GROUP, Actor(user, manager), name, dict))
-
-
-def started(game, *pregens):
-    campaigns = game[0]
-    cmd(campaigns, "开团", "茶馆失物")
-    for user, name in pregens or ((LIN, "林晓"), (ZHAO, "赵川")):
-        cmd(campaigns, "加入", name, user)
-    return cmd(campaigns, "开始")
-
-
-def act(game, user, text, mid):
-    campaigns, rounds, _, _, _, clock = game
-    clock.now += 1
-    return rounds.receive(GROUP, user, str(mid), text, clock.now)
-
-
-def settle(game):
-    """等够时间、收齐、结算。返回发到群里的消息。"""
-    campaigns, rounds, engine, _, _, clock = game
-    clock.now += 61
-    rounds.tick(clock.now, T)
-    c = campaigns.active(GROUP)
-    return asyncio.run(engine.settle(c.id)) if c else []
-
-
-def intent(*actions):
-    return {"actions": [{"user": u, "summary": s, "kind": k, **kw} for u, s, k, kw in actions]}
-
-
-def ruling(user, needs_roll=False, **kw):
-    return {"user": user, "needs_roll": needs_roll, **kw}
 
 
 # ---------------------------------------------------------------- 剧透检查
@@ -479,6 +395,7 @@ def test_full_play_through(game):
                on_success={"flags": ["f1"], "exit": "s2", "npc_reply": "老周叹了口气，解下腰带上的钥匙"}),
         ruling(ZHAO)]})
     brain.add("narrator", "老周看着地上的脚印，叹了口气，解下腰带上的钥匙打开了储藏室。门一开，一只花猫从货架上扑了下来。")
+    brain.add("summary", "林晓在柜台后发现了老周的脚印，说服老周打开了储藏室。")
     rng.d100(10, 30, 30)  # 说服 40 困难 → 10 通过；两人理智检定都过
     out = settle(game)
     assert "说服" in out[1] and "理智检定" in out[1] and any("苏禾加入了调查" in m for m in out)

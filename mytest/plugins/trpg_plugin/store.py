@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 -- 上传的模组（插件自带的模组不进这张表，直接读文件）
@@ -155,6 +155,28 @@ CREATE TABLE IF NOT EXISTS pending_choice (
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pending_choice_campaign ON pending_choice(campaign_id, status);
+
+-- 待发消息。先写进来再发，发送失败重试；发过的不重发
+CREATE TABLE IF NOT EXISTS outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending / sent / failed
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_at INTEGER NOT NULL,
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS outbox_pending ON outbox(status, next_at);
+
+-- 剧情摘要：覆盖到第几轮
+CREATE TABLE IF NOT EXISTS summary (
+    campaign_id INTEGER NOT NULL,
+    upto_round INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, upto_round)
+);
 
 -- 模型调用和其他排查用的记录。visibility：kp（含秘密）/ public
 CREATE TABLE IF NOT EXISTS log (
@@ -468,6 +490,64 @@ class Store:
         """重启时，处理到一半的选择回到等回答。"""
         with self.transaction() as db:
             db.execute("UPDATE pending_choice SET status = 'open' WHERE status = 'working'")
+
+    # ---------------------------------------------------------------- 发送队列
+
+    def enqueue(self, group_id: str, texts: list[str], now: int) -> None:
+        texts = [t for t in texts if t and t.strip()]
+        if not texts:
+            return
+        with self.transaction() as db:
+            db.executemany("INSERT INTO outbox (group_id, text, next_at, created_at) VALUES (?, ?, ?, ?)",
+                           [(group_id, t, now, now) for t in texts])
+
+    def due_messages(self, now: int, limit: int = 50) -> list[sqlite3.Row]:
+        """该发的消息，按写入顺序。一个群前面那条没发出去，后面的也先不发（保证顺序）。"""
+        rows = self._all("SELECT * FROM outbox WHERE status = 'pending' ORDER BY id LIMIT ?", (limit * 4,))
+        out, blocked = [], set()
+        for r in rows:
+            if r["group_id"] in blocked:
+                continue
+            if r["next_at"] > now:
+                blocked.add(r["group_id"])
+                continue
+            out.append(r)
+            if len(out) >= limit:
+                break
+        return out
+
+    def mark_sent(self, message_id: int) -> None:
+        with self.transaction() as db:
+            db.execute("UPDATE outbox SET status = 'sent', attempts = attempts + 1 WHERE id = ?", (message_id,))
+
+    def mark_send_failed(self, message_id: int, error: str, next_at: int, give_up: bool) -> None:
+        with self.transaction() as db:
+            db.execute("UPDATE outbox SET status = ?, attempts = attempts + 1, next_at = ?, error = ? WHERE id = ?",
+                       ("failed" if give_up else "pending", next_at, error[:300], message_id))
+
+    def outbox_stats(self) -> dict[str, int]:
+        rows = self._all("SELECT status, COUNT(*) FROM outbox GROUP BY status")
+        return {r[0]: r[1] for r in rows}
+
+    def prune_outbox(self, before: int) -> None:
+        with self.transaction() as db:
+            db.execute("DELETE FROM outbox WHERE status = 'sent' AND created_at < ?", (before,))
+
+    # ---------------------------------------------------------------- 摘要
+
+    def latest_summary(self, campaign_id: int) -> sqlite3.Row | None:
+        return self._one("SELECT upto_round, text FROM summary WHERE campaign_id = ? ORDER BY upto_round DESC LIMIT 1",
+                         (campaign_id,))
+
+    def save_summary(self, campaign_id: int, upto_round: int, text: str, now: int) -> None:
+        with self.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO summary (campaign_id, upto_round, text, created_at) VALUES (?, ?, ?, ?)",
+                       (campaign_id, upto_round, text, now))
+
+    def narrations_since(self, campaign_id: int, after_round: int) -> list[tuple[int, str]]:
+        rows = self._all("SELECT round_no, data FROM log WHERE campaign_id = ? AND kind = 'narration'"
+                         " AND visibility = 'public' AND round_no > ? ORDER BY id", (campaign_id, after_round))
+        return [(r[0], json.loads(r[1]).get("text", "")) for r in rows]
 
     def public_narrations(self, campaign_id: int, limit: int) -> list[str]:
         """最近几段发到群里的叙述，从旧到新。"""
