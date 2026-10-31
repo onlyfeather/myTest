@@ -50,12 +50,19 @@ class RetryingClient(httpx.AsyncClient):
                 await asyncio.sleep(self.retry_delay)
 
 
+NO_PROXY = "direct://"  # 和 _shared.proxy.NO_PROXY 一样：真正直连，连环境变量里的代理也不用
+
+
 @asynccontextmanager
 async def http_client(proxy: str = "", timeout: float = 60.0, *, retries: int = CONNECT_RETRIES,
                       retry_delay: float = 1.5) -> AsyncIterator[httpx.AsyncClient]:
+    """proxy：代理地址；空字符串按环境变量（HTTP_PROXY / HTTPS_PROXY）；NO_PROXY 真正直连。"""
     # 每次请求按当前配置新建客户端，这样在 WebUI 改了代理或超时立即生效。
+    proxy = proxy.strip()
+    direct = proxy == NO_PROXY
     async with RetryingClient(
-        proxy=proxy.strip() or None,
+        proxy=None if direct or not proxy else proxy,
+        trust_env=not direct,
         timeout=httpx.Timeout(timeout, connect=15.0),
         follow_redirects=True,
         retries=retries,

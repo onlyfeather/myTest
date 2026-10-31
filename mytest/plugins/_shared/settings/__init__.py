@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .. import proxy as _proxy
 from .registry import (
     AccountPanel,
     FileSlot,
@@ -24,6 +23,7 @@ from .registry import (
     SettingsStore,
     coerce,
 )
+from .. import proxy as _proxy
 
 __all__ = [
     "AccountPanel",
@@ -134,15 +134,21 @@ def proxy_for(view: Any, parent: Any = None) -> str:
     没有 proxy_mode 时按「跟以前一样」处理。parent：view 选了「跟上级一样」时用谁的设置。"""
     mode = str(getattr(view, "proxy_mode", _proxy.AUTO) or _proxy.AUTO)
     if mode == _proxy.INHERIT:
-        return proxy_for(parent) if parent is not None else ""
+        if parent is not None:
+            return proxy_for(parent)
+        mode = _proxy.AUTO
     custom = str(getattr(view, "proxy", "") or "")
     return _proxy.resolve(mode, custom, str(proxy_settings.main), str(proxy_settings.backup))
 
 
 async def _test_proxies() -> str:
     lines = []
+    env = _proxy.environment()
+    if env:
+        shown = "，".join(f"{k}={v}" for k, v in env.items())
+        lines.append(f"容器环境变量里的代理：{shown}。「跟以前一样」且没填代理的服务会走它，选「直连」的不会")
     for label, url in (("公共代理", str(proxy_settings.main)), ("备用代理", str(proxy_settings.backup)),
-                       ("直连", "")):
+                       ("直连", _proxy.NO_PROXY)):
         if label != "直连" and not url.strip():
             lines.append(f"{label}：没有填")
             continue

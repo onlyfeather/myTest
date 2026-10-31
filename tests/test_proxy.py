@@ -12,14 +12,17 @@ from mytest.plugins._shared.settings.registry import SettingField, SettingSectio
 MAIN, BACKUP, OWN = "http://mihomo:7890", "http://10.0.0.2:7891", "http://own:3128"
 
 
+D = proxy.NO_PROXY
+
+
 @pytest.mark.parametrize("mode, custom, expected", [
     ("auto", OWN, OWN),           # 升级前填过代理：继续用
-    ("auto", "", ""),             # 升级前没填：继续直连，不会因为填了公共代理就突然走代理
-    ("direct", OWN, ""),
+    ("auto", "", ""),             # 升级前没填：照旧（按环境变量），不会因为填了公共代理就突然走公共代理
+    ("direct", OWN, D),           # 真正直连，连环境变量里的代理也不用
     ("main", OWN, MAIN),
     ("backup", "", BACKUP),
     ("custom", OWN, OWN),
-    ("custom", "", ""),
+    ("custom", "", D),
     ("不认识的", OWN, OWN),        # 配置文件被手改坏了：按老行为
 ])
 def test_resolve(mode, custom, expected):
@@ -28,7 +31,36 @@ def test_resolve(mode, custom, expected):
 
 def test_resolve_strips_spaces_and_empty_main():
     assert proxy.resolve("main", "", f"  {MAIN}  ", "") == MAIN
-    assert proxy.resolve("main", OWN, "", BACKUP) == "", "选了公共代理但没填，按直连"
+    assert proxy.resolve("main", OWN, "", BACKUP) == D, "选了公共代理但没填，直连，不悄悄走环境变量"
+
+
+def test_direct_ignores_env_proxy(monkeypatch):
+    """选「直连」时 docker-compose.yml 里的 HTTPS_PROXY 不能生效；不填代理（老行为）时照旧生效。"""
+    from mytest.plugins._shared.services.http import http_client
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://mihomo:7890")
+    monkeypatch.setenv("HTTP_PROXY", "http://mihomo:7890")
+
+    async def state(p):
+        async with http_client(p) as c:
+            return c._trust_env, [str(k.pattern) for k in c._mounts]
+
+    trust, mounts = asyncio.run(state(proxy.NO_PROXY))
+    assert trust is False and mounts == []
+    trust, mounts = asyncio.run(state(""))
+    assert trust is True and mounts, "老行为：没填就按环境变量"
+    trust, mounts = asyncio.run(state(MAIN))
+    assert mounts, "填了代理照常用"
+
+
+def test_environment_shows_env_proxy(monkeypatch):
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy",
+                "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    assert proxy.environment() == {}
+    monkeypatch.setenv("HTTPS_PROXY", "http://user:pw@mihomo:7890")
+    monkeypatch.setenv("NO_PROXY", "localhost,qq.com")
+    assert proxy.environment() == {"HTTPS_PROXY": "http://mihomo:7890", "NO_PROXY": "localhost,qq.com"}
 
 
 @pytest.mark.parametrize("url, ok", [
@@ -48,7 +80,8 @@ def test_problem(url, ok):
 
 
 def test_describe_hides_password():
-    assert proxy.describe("") == "直连"
+    assert proxy.describe(proxy.NO_PROXY) == "直连"
+    assert proxy.describe("") == "按容器环境变量"
     assert proxy.describe("http://user:secret@10.0.0.2:7890") == "http://10.0.0.2:7890"
     assert "SOCKS" in proxy.problem("socks5://10.0.0.2:1080")
 
@@ -131,12 +164,12 @@ def test_novelai_and_gpt_image_follow_draw_unless_set(tmp_path, monkeypatch):
     store.update("gpt", {"proxy_mode": "direct"})
     store.update("proxy", {"main": MAIN})
     store.update("nai", {"proxy_mode": "main"})
-    assert shared.proxy_for(gpt, draw) == "", "GPT 中转站直连"
+    assert shared.proxy_for(gpt, draw) == proxy.NO_PROXY, "GPT 中转站真正直连"
     assert shared.proxy_for(nai, draw) == MAIN, "NovelAI 走公共代理"
     assert shared.proxy_for(draw) == OWN, "画图页自己的设置不受影响"
     assert shared.proxy_for(nai) == MAIN
     store.update("nai", {"proxy_mode": "inherit"})
-    assert shared.proxy_for(nai) == "", "没给上级时按直连，不报错"
+    assert shared.proxy_for(nai) == "", "没给上级时按老行为（环境变量），不报错"
     modes = [v for v, _ in nai._store._sections["nai"].fields[0].options]
     assert modes[0] == "inherit" and "auto" not in modes
 
