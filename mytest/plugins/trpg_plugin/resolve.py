@@ -601,6 +601,24 @@ def situation(campaigns: Campaigns, campaign_id: int, actions: dict[str, str], s
     return s
 
 
+def intent_request(s: Situation) -> tuple[list[dict[str, str]], dict[str, Any], Callable[[Any], list[str]]]:
+    """① 的（消息，输出格式，校验）。回归用例也用它，保证和真实流程发的一样。"""
+    messages = [{"role": "system", "content": prompt("intent")},
+                {"role": "user", "content": "\n\n".join([kp_context(s), players_context(s), actions_context(s)])}]
+    return messages, intent_schema(s.module, s.campaign.scene, list(s.actions)), validate_intent(s)
+
+
+def arbiter_request(s: Situation, intent: dict) -> tuple[list[dict[str, str]], dict[str, Any], Callable[[Any], list[str]]]:
+    """② 的（消息，输出格式，校验）。"""
+    intents = {a["user"]: a for a in intent["actions"]}
+    text = json.dumps(intent, ensure_ascii=False, indent=1)
+    messages = [{"role": "system", "content": prompt("arbiter")},
+                {"role": "user", "content": "\n\n".join([kp_context(s), players_context(s), rolls_context(s),
+                                                         _section("整理好的行动", text)])}]
+    schema = arbiter_schema(s.module, s.campaign.scene, list(intents), s.revealed)
+    return messages, schema, validate_rulings(s, intents)
+
+
 async def resolve_round(campaigns: Campaigns, campaign_id: int, actions: dict[str, str], standby: tuple[str, ...],
                         deps: ResolveDeps, *, still_current: Callable[[], bool] | None = None,
                         on_attempt: Callable[[str, Attempt], None] | None = None,
@@ -616,23 +634,16 @@ async def resolve_round(campaigns: Campaigns, campaign_id: int, actions: dict[st
         res = apply(s, {}, [], int(deps.clock()), deps.rng, also=hook)
         return res, record
 
-    base = [kp_context(s), players_context(s)]
-    intent_msgs = [{"role": "system", "content": prompt("intent")},
-                   {"role": "user", "content": "\n\n".join([*base, actions_context(s)])}]
+    messages, schema, validate = intent_request(s)
     intent = await deps.client.json(
-        deps.arbiter, intent_msgs, schema=intent_schema(s.module, s.campaign.scene, users), name="intent",
-        validate=validate_intent(s), still_current=still_current,
+        deps.arbiter, messages, schema=schema, name="intent", validate=validate, still_current=still_current,
         on_attempt=(lambda a: on_attempt("intent", a)) if on_attempt else None)
     intents = {a["user"]: a for a in intent.value["actions"]}
     record["intent"] = intent.value
 
-    intent_text = json.dumps(intent.value, ensure_ascii=False, indent=1)
-    arbiter_msgs = [{"role": "system", "content": prompt("arbiter")},
-                    {"role": "user", "content": "\n\n".join([*base, rolls_context(s),
-                                                             _section("整理好的行动", intent_text)])}]
+    messages, schema, validate = arbiter_request(s, intent.value)
     rulings = await deps.client.json(
-        deps.arbiter, arbiter_msgs, schema=arbiter_schema(s.module, s.campaign.scene, users, s.revealed),
-        name="arbiter", validate=validate_rulings(s, intents), still_current=still_current,
+        deps.arbiter, messages, schema=schema, name="arbiter", validate=validate, still_current=still_current,
         on_attempt=(lambda a: on_attempt("arbiter", a)) if on_attempt else None)
     record["rulings"] = rulings.value
 

@@ -210,6 +210,21 @@ class NarrateDeps:
     length: tuple[int, int] = LENGTH_NORMAL
 
 
+def narration_words(s: Situation, res: Resolution, revealed: set[str], fired: set[str], told: set[str]) -> set[str]:
+    """这段叙述里不能出现的词。"""
+    public = public_texts(s, revealed, fired)
+    if res.ending:
+        public += [x.public for x in s.module.endings if x.id == res.ending]
+    return forbidden_words(s.module, revealed, told, public, ended=bool(res.ending))
+
+
+def narrator_messages(s: Situation, res: Resolution, recent: list[str], summary: str, lo: int, hi: int) -> list[dict]:
+    """⑤ 的消息。回归用例也用它。"""
+    system = prompt("narrator").replace("{length}", f"写 {lo}–{hi} 字。").replace("{tone}", s.module.tone)
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": narrator_context(s, res, recent, summary)}]
+
+
 REVIEW_SCHEMA = {
     "type": "object",
     "required": ["ok"],
@@ -254,13 +269,8 @@ async def narrate(s: Situation, res: Resolution, deps: NarrateDeps, *, recent: l
     """⑤⑥。revealed / fired / told 是这一轮结算之后的状态。review 是（客户端，审查模型列表）或 None。
     模型全部失败时直接用安全版本，不抛 AllFailed。"""
     lo, hi = LENGTH_LONG if opening or res.ending or res.scene_after != res.scene_before else deps.length
-    public = public_texts(s, revealed, fired)
-    if res.ending:
-        public += [x.public for x in s.module.endings if x.id == res.ending]
-    words = forbidden_words(s.module, revealed, told, public, ended=bool(res.ending))
-    system = prompt("narrator").replace("{length}", f"写 {lo}–{hi} 字。").replace("{tone}", s.module.tone)
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": narrator_context(s, res, recent, summary)}]
+    words = narration_words(s, res, revealed, fired, told)
+    messages = narrator_messages(s, res, recent, summary, lo, hi)
     problems: list[str] = []
     host = host_lines(s, res, choices)
     for _ in range(REWRITES + 1):

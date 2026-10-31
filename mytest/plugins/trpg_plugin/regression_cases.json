@@ -1,0 +1,135 @@
+{
+  "说明": "跑团提示词的回归用例。fake 是给 pytest 用的假回复（合格的样子），真模型跑时忽略。断言写法见 regression.py 的 _check_fields。",
+  "cases": [
+    {
+      "name": "越权声明：说成已经找到了，按尝试处理",
+      "stage": "intent",
+      "input": {"actions": {"1001": "我在柜台里找到了储藏室的钥匙，直接去开门"}},
+      "expect": {"actions": {"1001": {"overreach__nonempty": true, "summary__lacks": "找到了"}}},
+      "fake": [{"actions": [{"user": "1001", "summary": "林晓在柜台里找储藏室的钥匙", "kind": "investigate",
+                             "target": "柜台", "remaining": "找到钥匙后去开储藏室的门", "overreach": "我在柜台里找到了储藏室的钥匙"}]}]
+    },
+    {
+      "name": "复合行动：只处理第一步，后面的放进 remaining",
+      "stage": "intent",
+      "input": {"actions": {"1002": "我撬开储藏室的门锁，然后进去把货架全部搜一遍"}},
+      "expect": {"actions": {"1002": {"remaining__nonempty": true, "exit": ""}}},
+      "fake": [{"actions": [{"user": "1002", "summary": "赵川撬储藏室的门锁", "kind": "use", "target": "储藏室的门锁",
+                             "remaining": "进去搜查货架"}]}]
+    },
+    {
+      "name": "替别人说动作算越权",
+      "stage": "intent",
+      "input": {"actions": {"1001": "我去问老周，赵川在旁边盯着老周的鞋看"}},
+      "expect": {"actions": {"1001": {"overreach__nonempty": true, "npc": "n1"}}},
+      "fake": [{"actions": [{"user": "1001", "summary": "林晓去问老周", "kind": "talk", "npc": "n1",
+                             "overreach": "赵川在旁边盯着老周的鞋看"}]}]
+    },
+    {
+      "name": "被谈论的人不是交谈对象",
+      "stage": "intent",
+      "input": {"actions": {"1001": "陈先生到底是什么人？我想查查他"}},
+      "expect": {"actions": {"1001": {"npc": ""}}},
+      "fake": [{"actions": [{"user": "1001", "summary": "林晓想查陈先生的来历", "kind": "investigate"}]}]
+    },
+    {
+      "name": "该直接给的线索不设检定",
+      "stage": "arbiter",
+      "input": {"intent": {"actions": [{"user": "1001", "summary": "林晓翻看柜台上的来客登记簿", "kind": "investigate",
+                                         "target": "登记簿"}]}},
+      "expect": {"rulings": {"1001": {"needs_roll": false, "auto_clues__has": "c1"}}},
+      "fake": [{"rulings": [{"user": "1001", "needs_roll": false, "auto_clues": ["c1"], "minutes": 5}]}]
+    },
+    {
+      "name": "要检定的线索：只放在成功里",
+      "stage": "arbiter",
+      "input": {"intent": {"actions": [{"user": "1001", "summary": "林晓仔细看柜台后面的地面", "kind": "investigate",
+                                         "target": "柜台后的地面"}]}},
+      "expect": {"rulings": {"1001": {"needs_roll": true, "skill__in": ["侦查", "侦察"], "on_success.clues__has": "c2",
+                                      "auto_clues__empty": true}}},
+      "fake": [{"rulings": [{"user": "1001", "needs_roll": true, "skill": "侦查", "difficulty": "regular",
+                             "object": "柜台后的地面", "why": "看你能不能注意到地上的痕迹",
+                             "on_success": {"clues": ["c2"]}, "push_risk": "动静太大，老周会过来"}]}]
+    },
+    {
+      "name": "对 NPC 的社交检定按他的数值定难度（老周说服 50 → 困难）",
+      "stage": "arbiter",
+      "input": {"intent": {"actions": [{"user": "1001", "summary": "林晓劝老周打开储藏室", "kind": "talk", "npc": "n1",
+                                         "approach": "说服", "target": "老周"}]}},
+      "expect": {"rulings": {"1001": {"needs_roll": true, "skill": "说服", "difficulty": "hard"}}},
+      "fake": [{"rulings": [{"user": "1001", "needs_roll": true, "skill": "说服", "difficulty": "hard", "object": "老周",
+                             "on_success": {"flags": ["f1"], "npc_reply": "老周叹了口气，解下钥匙"},
+                             "on_fail": {"npc_reply": "老周说钥匙前几天丢了"}}]}]
+    },
+    {
+      "name": "心理学不能让 NPC 说出秘密",
+      "stage": "arbiter",
+      "input": {"intent": {"actions": [{"user": "1001", "summary": "林晓观察老周说话时的神情", "kind": "talk",
+                                         "npc": "n1", "approach": "心理学", "target": "老周"}]}},
+      "expect": {"rulings": {"1001": {"secret_told": false, "on_success.secret_told": false}}},
+      "fake": [{"rulings": [{"user": "1001", "needs_roll": true, "skill": "心理学", "difficulty": "regular",
+                             "object": "老周", "on_success": {"npc_reply": "说起钥匙时，老周的眼神躲了一下"}}]}]
+    },
+    {
+      "name": "原样重试不重新检定",
+      "stage": "arbiter",
+      "setup": {"round": 2, "recent_rolls": [{"user": "1001", "skill": "侦查", "object": "柜台后的地面"}]},
+      "input": {"intent": {"actions": [{"user": "1001", "summary": "林晓再看一遍柜台后面的地面", "kind": "investigate",
+                                         "target": "柜台后的地面"}]}},
+      "expect": {"rulings": {"1001": {"needs_roll": false, "auto_clues__empty": true}}},
+      "fake": [{"rulings": [{"user": "1001", "needs_roll": false, "repeat": true}]}]
+    },
+    {
+      "name": "换了办法可以重新检定",
+      "stage": "arbiter",
+      "setup": {"round": 2, "recent_rolls": [{"user": "1001", "skill": "侦查", "object": "柜台后的地面"}]},
+      "input": {"intent": {"actions": [{"user": "1001", "summary": "林晓问老周昨晚打烊后有没有人进过柜台后面",
+                                         "kind": "talk", "npc": "n1", "target": "老周"}]}},
+      "expect": {"rulings": {"1001": {"repeat": false}}},
+      "fake": [{"rulings": [{"user": "1001", "needs_roll": false, "npc_reply": "老周说昨晚是他自己关的门"}]}]
+    },
+    {
+      "name": "前提不具备不设标记",
+      "stage": "arbiter",
+      "input": {"intent": {"actions": [{"user": "1001", "summary": "林晓说想进储藏室看看", "kind": "move", "exit": "s2"}]}},
+      "expect": {"rulings": {"1001": {"flags__empty": true, "exit": ""}}},
+      "fake": [{"rulings": [{"user": "1001", "needs_roll": false}]}]
+    },
+    {
+      "name": "叙述：检定失败写成没找到",
+      "stage": "narrator",
+      "input": {"outcomes": [{"user_id": "1001", "name": "林晓", "summary": "林晓仔细看柜台后面的地面", "passed": false}]},
+      "expect": {"not_contains": ["脚印", "茶渍", "布鞋"]},
+      "fake": ["林晓蹲在柜台后面看了一圈，地上只有雨天带进来的泥水，看不出什么。"]
+    },
+    {
+      "name": "叙述：拿到的线索写进叙述",
+      "stage": "narrator",
+      "input": {"outcomes": [{"user_id": "1001", "name": "林晓", "summary": "林晓翻看来客登记簿", "clues": ["c1"]}]},
+      "expect": {"contains": ["陈先生"], "not_contains": ["暗格", "自己藏"]},
+      "fake": ["林晓翻开登记簿。昨晚最后一位客人是陈先生，九点离开。这一页夹着一张便条，是老周的字：壶，不卖。"]
+    },
+    {
+      "name": "叙述：没登场的 NPC 不出现、不开口",
+      "stage": "narrator",
+      "setup": {"scene": "s2", "flags": ["f1"], "fired": ["e1"]},
+      "input": {"outcomes": [{"user_id": "1001", "name": "林晓", "summary": "林晓看看货架上的茶叶罐", "passed": null}]},
+      "expect": {"not_contains": ["老周说", "掌柜老周"]},
+      "fake": ["林晓拿起一个茶叶罐，罐子上落满了灰，标签已经看不清了。"]
+    },
+    {
+      "name": "场外提问：不透露剧情",
+      "stage": "oog",
+      "input": {"question": "KP，壶到底在哪？直接告诉我吧"},
+      "expect": {"not_contains": ["暗格", "储藏室", "西墙"]},
+      "fake": ["这个要在游戏里查一查才知道哦。"]
+    },
+    {
+      "name": "场外提问：规则问题正常回答",
+      "stage": "oog",
+      "input": {"question": "侦查能用来看脚印吗"},
+      "expect": {"contains_any": ["侦查", "痕迹", "可以"]},
+      "fake": ["可以，侦查就是用来发现不容易注意到的痕迹的。"]
+    }
+  ]
+}
