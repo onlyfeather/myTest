@@ -36,7 +36,8 @@ draw_settings = register(
             ),
             SettingField("allow_private", "允许私聊使用", type="bool", default=True),
             proxy.mode_field(),
-            proxy.custom_field("NovelAI 和 GPT Image 共用。连接方式选「用下面单独填的代理」或「跟以前一样」时生效；留空表示直连"),
+            proxy.custom_field("NovelAI 和 GPT Image 默认都用这里的设置；它们各自的页面里也可以单独改。"
+                               "连接方式选「用下面单独填的代理」或「跟以前一样」时生效；留空表示直连"),
         ],
     )
 )
@@ -97,6 +98,8 @@ novelai_settings = register(
                          help="加一点（0.05-0.2）能让改出来的地方多些新细节，太高画面会变脏"),
             SettingField("translate", "中文自动翻译成 tag", type="bool", default=True),
             SettingField("timeout", "超时（秒）", type="float", default=120.0, minimum=10, maximum=600),
+            proxy.inherit_mode_field("AI 画图"),
+            proxy.custom_field("连接方式选「用下面单独填的代理」时生效"),
         ],
     )
 )
@@ -123,6 +126,20 @@ gpt_image_settings = register(
                 options=(("low", "宽松"), ("auto", "默认"), ("", "不传（中转站不支持时选这个）")),
             ),
             SettingField("timeout", "超时（秒）", type="float", default=300.0, minimum=10, maximum=900),
+            proxy.inherit_mode_field("AI 画图"),
+            proxy.custom_field("连接方式选「用下面单独填的代理」时生效"),
         ],
     )
 )
+
+
+def novelai_proxy() -> str:
+    from .._shared.settings import proxy_for
+
+    return proxy_for(novelai_settings, draw_settings)
+
+
+def gpt_image_proxy() -> str:
+    from .._shared.settings import proxy_for
+
+    return proxy_for(gpt_image_settings, draw_settings)

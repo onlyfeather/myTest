@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 from .settings.registry import SettingField, SettingSection
 
-AUTO, DIRECT, MAIN, BACKUP, CUSTOM = "auto", "direct", "main", "backup", "custom"
+AUTO, DIRECT, MAIN, BACKUP, CUSTOM, INHERIT = "auto", "direct", "main", "backup", "custom", "inherit"
 MODES = (
     (AUTO, "跟以前一样（填了下面的代理就用，没填就直连）"),
     (DIRECT, "直连"),
@@ -68,6 +68,14 @@ def mode_field(group: str = "连接") -> SettingField:
                         help="国内服务器连国外接口一般要走代理。代理地址在左侧「网络代理」页统一填")
 
 
+def inherit_mode_field(parent: str, group: str = "连接") -> SettingField:
+    """子服务（比如 NovelAI、GPT Image）的连接方式：默认跟上级（「AI 画图」）一样，也可以单独选。"""
+    options = ((INHERIT, f"跟「{parent}」一样"),
+               *((v, label) for v, label in MODES if v != AUTO))
+    return SettingField("proxy_mode", "连接方式", type="select", default=INHERIT, options=options, group=group,
+                        help=f"默认用「{parent}」页的设置。国内能直连的中转站选「直连」，不用绕代理")
+
+
 def custom_field(help: str = "", group: str = "连接") -> SettingField:
     """服务自己的代理。键名还是 proxy，原来保存的值继续有效。"""
     return SettingField("proxy", "单独的代理", default="", placeholder="http://mihomo:7890", group=group,
@@ -76,7 +84,7 @@ def custom_field(help: str = "", group: str = "连接") -> SettingField:
 
 
 def resolve(mode: str, custom: str, main: str, backup: str) -> str:
-    """返回要用的代理地址；空字符串表示直连。"""
+    """返回要用的代理地址；空字符串表示直连。inherit 要先由调用方换成上级的结果（见 settings.proxy_for）。"""
     custom, main, backup = (str(x or "").strip() for x in (custom, main, backup))
     if mode == DIRECT:
         return ""

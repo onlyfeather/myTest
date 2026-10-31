@@ -10,13 +10,56 @@ class ServiceError(Exception):
     """调用外部服务失败。message 是可以直接发给用户看的中文说明。"""
 
 
+CONNECT_RETRIES = 1  # 连接阶段失败时再试几次
+CONNECT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError)
+
+
+def _replayable(request: httpx.Request) -> bool:
+    """请求体能不能原样再发一次：JSON / 表单（ByteStream）和用 bytes 组成的 multipart（参考图上传）可以；
+    生成器这种只能读一次的不行。"""
+    stream = request.stream
+    if isinstance(stream, httpx.ByteStream):
+        return True
+    return type(stream).__name__ == "MultipartStream"
+
+
+class RetryingClient(httpx.AsyncClient):
+    """连接阶段失败时重试：连不上、代理拒绝、加密握手被断开（节点 503 时 mihomo 会直接断开）。
+
+    这些错误发生在请求送到对方之前，对方没收到请求，重试不会多扣钱（画图、语音）。
+    读超时、HTTP 错误这类请求可能已经到了对方的情况一律不重试。
+    只改 send，代理（包括没填代理时读环境变量 HTTPS_PROXY）和以前完全一样。
+    """
+
+    def __init__(self, *args, retries: int = CONNECT_RETRIES, retry_delay: float = 1.5, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.retries = retries
+        self.retry_delay = retry_delay
+
+    async def send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+        import asyncio
+
+        attempt = 0
+        while True:
+            try:
+                return await super().send(request, **kwargs)
+            except CONNECT_ERRORS:
+                if attempt >= self.retries or not _replayable(request):
+                    raise
+                attempt += 1
+                await asyncio.sleep(self.retry_delay)
+
+
 @asynccontextmanager
-async def http_client(proxy: str = "", timeout: float = 60.0) -> AsyncIterator[httpx.AsyncClient]:
+async def http_client(proxy: str = "", timeout: float = 60.0, *, retries: int = CONNECT_RETRIES,
+                      retry_delay: float = 1.5) -> AsyncIterator[httpx.AsyncClient]:
     # 每次请求按当前配置新建客户端，这样在 WebUI 改了代理或超时立即生效。
-    async with httpx.AsyncClient(
+    async with RetryingClient(
         proxy=proxy.strip() or None,
         timeout=httpx.Timeout(timeout, connect=15.0),
         follow_redirects=True,
+        retries=retries,
+        retry_delay=retry_delay,
     ) as client:
         yield client
 

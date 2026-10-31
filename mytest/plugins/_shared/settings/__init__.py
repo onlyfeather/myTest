@@ -129,10 +129,12 @@ llm_settings = register(
 proxy_settings = register(_proxy.section())
 
 
-def proxy_for(view: Any) -> str:
+def proxy_for(view: Any, parent: Any = None) -> str:
     """某个服务这次要用的代理（空字符串表示直连）。view 是带 proxy_mode / proxy 的配置分区；
-    没有 proxy_mode 时按「跟以前一样」处理。"""
+    没有 proxy_mode 时按「跟以前一样」处理。parent：view 选了「跟上级一样」时用谁的设置。"""
     mode = str(getattr(view, "proxy_mode", _proxy.AUTO) or _proxy.AUTO)
+    if mode == _proxy.INHERIT:
+        return proxy_for(parent) if parent is not None else ""
     custom = str(getattr(view, "proxy", "") or "")
     return _proxy.resolve(mode, custom, str(proxy_settings.main), str(proxy_settings.backup))
 

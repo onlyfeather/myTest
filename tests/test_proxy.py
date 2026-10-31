@@ -115,6 +115,32 @@ def test_probe_reports_each_target(monkeypatch):
     assert "公共代理（http://mihomo:7890）" in text and "✓ A" in text and "✗ Fish Audio" in text
 
 
+def test_novelai_and_gpt_image_follow_draw_unless_set(tmp_path, monkeypatch):
+    """NovelAI、GPT Image 默认跟「AI 画图」一样；单独设了就用自己的（比如 GPT 中转站直连、NovelAI 走代理）。"""
+    from mytest.plugins._shared import settings as shared
+
+    store = SettingsStore(tmp_path / "s.json", env_lookup=lambda name: None)
+    monkeypatch.setattr(shared, "proxy_settings", store.register(proxy.section()))
+    draw = store.register(SettingSection("draw", "画图", fields=[proxy.mode_field(), proxy.custom_field()]))
+    nai = store.register(SettingSection("nai", "NovelAI", fields=[proxy.inherit_mode_field("画图"), proxy.custom_field()]))
+    gpt = store.register(SettingSection("gpt", "GPT", fields=[proxy.inherit_mode_field("画图"), proxy.custom_field()]))
+
+    store.update("draw", {"proxy": OWN})  # 升级前的老配置：画图统一走这个代理
+    assert shared.proxy_for(nai, draw) == OWN and shared.proxy_for(gpt, draw) == OWN, "默认跟以前一样"
+
+    store.update("gpt", {"proxy_mode": "direct"})
+    store.update("proxy", {"main": MAIN})
+    store.update("nai", {"proxy_mode": "main"})
+    assert shared.proxy_for(gpt, draw) == "", "GPT 中转站直连"
+    assert shared.proxy_for(nai, draw) == MAIN, "NovelAI 走公共代理"
+    assert shared.proxy_for(draw) == OWN, "画图页自己的设置不受影响"
+    assert shared.proxy_for(nai) == MAIN
+    store.update("nai", {"proxy_mode": "inherit"})
+    assert shared.proxy_for(nai) == "", "没给上级时按直连，不报错"
+    modes = [v for v, _ in nai._store._sections["nai"].fields[0].options]
+    assert modes[0] == "inherit" and "auto" not in modes
+
+
 def test_services_have_mode_field():
     """大模型、画图、语音合成都能选连接方式，原来的「代理」键名不变（保存的值继续有效）。"""
     from mytest.plugins._shared.settings import settings_store
@@ -123,6 +149,9 @@ def test_services_have_mode_field():
 
     sections = {s.id: s for s in settings_store.sections()}
     assert "proxy" in sections
-    for sid in ("llm", "ai_draw", "tts"):
+    for sid in ("llm", "ai_draw", "tts", "novelai", "gpt_image"):
         keys = [f.key for f in sections[sid].fields]
         assert "proxy_mode" in keys and "proxy" in keys, sid
+    for sid in ("novelai", "gpt_image"):
+        mode = next(f for f in sections[sid].fields if f.key == "proxy_mode")
+        assert mode.default == "inherit", sid

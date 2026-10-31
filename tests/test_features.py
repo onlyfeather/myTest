@@ -155,7 +155,7 @@ def test_draw_novelai_uses_source_size(monkeypatch):
         steps=28, scale=5.0, sampler="k_euler", token="t", base_url="", timeout=60.0,
         img2img_strength=0.5, img2img_noise=0.0, reference_strength=1.0, reference_fidelity=1.0,
     ))
-    monkeypatch.setattr(service, "draw_settings", SimpleNamespace(proxy=""))
+    monkeypatch.setattr(service, "novelai_proxy", lambda: "")
     result = run(service.draw("novelai", DrawRequest(size="竖图", prompt="白发, 1girl"),
                               service.DrawInputs(source=png(1600, 900), translated=True)))
     assert result.size == "横图"
