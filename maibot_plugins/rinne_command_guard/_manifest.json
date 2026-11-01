@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "id": "onlyfeather.rinne-command-guard",
+  "version": "1.0.0",
+  "name": "不接指令",
+  "description": "发给 NoneBot 的指令（/画图、.rd、搜图等）和指令之后的发图、回序号，MaiBot 不处理，凛音不会对着指令接话。先用只记录模式确认，再打开拦截。",
+  "author": {
+    "name": "onlyfeather",
+    "url": "https://github.com/onlyfeather"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/onlyfeather/myTest"
+  },
+  "host_application": {
+    "min_version": "1.3.0",
+    "max_version": "1.3.99"
+  },
+  "sdk": {
+    "min_version": "2.10.0",
+    "max_version": "2.16.99"
+  },
+  "plugin_type": "data",
+  "capabilities": [],
+  "i18n": {
+    "default_locale": "zh-CN"
+  }
+}
