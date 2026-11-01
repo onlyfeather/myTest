@@ -13,6 +13,13 @@
 | `rinne_qzone_post` | 有人让她发说说（NoneBot 核对，只限 superuser） | 按人设写一条日常说说 + 画一张配图（自拍或随手拍的东西），返回给插件，再由 Maizone 发到 QQ 空间 |
 | `rinne_music_share` | 有人点名让她发某首歌 | 三个平台一起搜，挑原版发音乐卡片（卡片里点播放就能听） |
 | `rinne_music_recommend` | 有人让她推荐歌 | 按对方的要求选歌，在平台上核对确实存在，发音乐卡片 |
+| `rinne_bilibili_search` | 有人让她找视频 | 在 B 站搜，发封面、标题和链接 |
+| `rinne_bilibili_watch` | 有人发了 B 站链接或分享卡片、问她视频讲了啥 | 读标题、简介和字幕告诉她，不往聊天里发东西 |
+
+## B 站
+
+在 NoneBot 的 WebUI「B站」里设置。不填 Cookie 也能搜视频、读简介；要读字幕（知道视频里说了什么）得填登录 Cookie。
+抖音反爬太严，没有做；群友发抖音链接时她会说看不了。
 
 ## 音乐
 

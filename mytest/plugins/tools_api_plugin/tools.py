@@ -508,6 +508,115 @@ async def tool_music_recommend(ctx: ToolContext, args: dict[str, Any]) -> dict[s
     return {"content": f"选好了：{names}，卡片马上发出去。用你自己的口吻简短介绍一下为什么选，不要再报一遍歌名。"}
 
 
+# ---------------------------------------------------------------- B 站
+
+
+async def _message_texts(ctx: ToolContext) -> list[str]:
+    """请求的那条消息、以及它回复的那条消息里的全部内容（文字和分享卡片的 JSON），用来找视频链接。"""
+    if not ctx.reply_to:
+        return []
+    bot = await _bot()
+    texts: list[str] = []
+    message_id: str | None = ctx.reply_to
+    for _ in range(2):  # 自己这条，加上被回复的那条
+        try:
+            data = await bot.get_msg(message_id=int(message_id))
+        except Exception as e:  # noqa: BLE001 消息太旧或 NapCat 不给：当作没有
+            logger.debug("[凛音工具] 读取消息 {} 失败：{}", message_id, e)
+            break
+        segments = data.get("message") if isinstance(data, dict) else None
+        message_id = None
+        for seg in segments if isinstance(segments, list) else []:
+            if not isinstance(seg, dict):
+                continue
+            seg_data = seg.get("data") or {}
+            if seg.get("type") == "reply" and isinstance(seg_data, dict):
+                message_id = str(seg_data.get("id") or "") or None
+            texts.extend(_strings(seg_data))
+        if not message_id or not message_id.isdigit():
+            break
+    return texts
+
+
+def _strings(value: Any) -> list[str]:
+    """消息段里所有的文字。分享卡片的 JSON 里链接写成 https:\\/\\/b23.tv\\/xxx，顺便还原。"""
+    if isinstance(value, str):
+        return [value.replace("\\/", "/")]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+async def tool_bilibili_search(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """有人让凛音找视频：在 B 站搜，发封面、标题和链接。"""
+    from .bilibili import bilibili_settings, card_text, client, order_of, pick, ready
+
+    if reason := ready():
+        raise ToolError(reason)
+    keyword = _text(args, "keyword", limit=60)
+    if not keyword:
+        raise ToolError("缺少搜索关键词")
+    count = _int(args, "count", default=1, low=1, high=3)
+    order = order_of(_choice(args, "order", ("relevant", "popular", "latest"), "relevant"))
+    api = client()
+    try:
+        videos = pick(await api.search(keyword, order=order), count)
+    except Exception as e:
+        raise ToolError(describe_exception("B站", e)) from None
+    if not videos:
+        raise ToolError(f"B 站上没搜到「{keyword}」的视频，换个说法再试")
+
+    async def job():
+        for video in videos:
+            msg = Message(MessageSegment.text(card_text(video)))
+            if bilibili_settings.send_cover and (cover := await api.cover(video)):
+                msg = Message(MessageSegment.image(cover)) + msg
+            try:
+                await send(ctx, msg)
+            except Exception as e:  # noqa: BLE001 带图发不出去时只发文字
+                logger.info("[凛音工具] B 站视频带封面发送失败，改发文字：{}", e)
+                await send(ctx, card_text(video))
+
+    _spawn("bilibili_search", job())
+    found = "\n".join(f"- 「{v.title}」UP：{v.author}，{v.duration}，{v.play} 播放：{v.desc[:80]}" for v in videos)
+    return {"content": f"找到了，视频马上发到聊天里：\n{found}\n用你自己的口吻简短说一句，不要再报标题和链接。"}
+
+
+async def tool_bilibili_watch(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """群友发了 B 站视频：读标题、简介和字幕，告诉凛音视频讲了什么。不往聊天里发东西。"""
+    from .bilibili import bilibili_settings, client, describe_for_rinne, ready
+
+    if reason := ready():
+        raise ToolError(reason)
+    link = _text(args, "link", limit=500)
+    api = client()
+    candidates = [link] if link else []
+    try:
+        candidates += await _message_texts(ctx)
+    except ToolError:
+        pass
+    ref = None
+    for text in candidates:
+        try:
+            ref = await api.resolve(text)
+            break
+        except Exception:  # noqa: BLE001 这一段没有链接，看下一段
+            continue
+    if ref is None:
+        raise ToolError("没找到 B 站视频链接。把对方发的链接原样填进 link 再试；对方发的是抖音等其他平台的话，你看不了")
+    try:
+        video = await api.video(ref)
+        subtitle = await api.subtitle(video) if bilibili_settings.read_subtitle and api.cookie else ""
+    except Exception as e:
+        raise ToolError(describe_exception("B站", e)) from None
+    return {
+        "content": describe_for_rinne(video, subtitle)
+        + "\n像自己刚看过一样自然地聊，可以说感想、吐槽或接对方的话；不要复述这些信息，不要发链接。",
+    }
+
+
 # ---------------------------------------------------------------- 注册表
 
 
@@ -576,5 +685,16 @@ TOOLS: dict[str, ToolSpec] = {
             },
             tool_music_recommend,
         ),
+        ToolSpec(
+            "bilibili_search",
+            "在 B 站找视频发出来",
+            {
+                "keyword": {"type": "string", "required": True},
+                "count": {"type": "integer"},
+                "order": {"type": "string", "enum": ["relevant", "popular", "latest"]},
+            },
+            tool_bilibili_search,
+        ),
+        ToolSpec("bilibili_watch", "看懂一个 B 站视频", {"link": {"type": "string"}}, tool_bilibili_watch),
     )
 }

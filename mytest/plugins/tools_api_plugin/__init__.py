@@ -20,6 +20,7 @@ require("nonebot_plugin_alconna")
 
 from .._shared.help import HelpTopic, help_registry
 from .._shared.settings import settings_store
+from .bilibili import bilibili_settings
 from .qzone import qzone_settings, test_weather
 from .selfie import list_persona_status, selfie_settings
 from .server import create_router
@@ -51,7 +52,7 @@ help_registry.register(
         title="和凛音说",
         aliases=("凛音", "聊天", "自拍", "工具"),
         summary=(
-            "不用记指令，直接跟凛音说就行：画图、自拍、语音、投骰、Pixiv 搜图、每日一图、发歌和推荐歌她都能直接做",
+            "不用记指令，直接跟凛音说就行：画图、自拍、语音、投骰、Pixiv 搜图、每日一图、发歌和推荐歌、找 B 站视频她都能直接做",
             "例：「帮我画…」「发张自拍」「用语音说…」「帮我投个侦查」「找几张…的图」",
         ),
         detail=(
@@ -61,7 +62,9 @@ help_registry.register(
             "用语音跟我说晚安 - 语音\n"
             "帮我投个侦查，60 - 投骰，结果是真随机的\n"
             "找几张初音的图 / 今天的每日一图 - Pixiv\n"
-            "发一下晴天 / 推荐首安静的歌 - 音乐卡片（想自己挑用 /点歌）\n\n"
+            "发一下晴天 / 推荐首安静的歌 - 音乐卡片（想自己挑用 /点歌）\n"
+            "找个猫的视频 - 在 B 站找视频发出来\n"
+            "发个 B 站链接问她「这个讲的啥」 - 她会去看标题、简介和字幕再聊（抖音看不了）\n\n"
             "她嘴上可能会嫌麻烦，但会去做。\n"
             "想要固定的效果（尺寸、画师串、参考图）还是用 /nai、/gpt画图 这些指令更准确。"
         ),
@@ -78,4 +81,4 @@ if isinstance(driver, ASGIMixin):
     else:
         logger.warning("[工具接口] 没有设置 TOOLS_API_TOKEN（至少 {} 位），凛音无法调用工具", MIN_TOKEN_LENGTH)
 
-__all__ = ["qzone_settings", "selfie_settings"]
+__all__ = ["bilibili_settings", "qzone_settings", "selfie_settings"]

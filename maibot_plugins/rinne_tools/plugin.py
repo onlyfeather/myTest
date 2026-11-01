@@ -54,6 +54,7 @@ class ToolsSection(PluginConfigBase):
     pixiv: bool = Field(default=True, description="Pixiv 搜图和每日推荐")
     qzone: bool = Field(default=True, description="发说说（只有主人能让她发，需要装 Maizone 插件）")
     music: bool = Field(default=True, description="发歌、推荐歌（音乐卡片）")
+    bilibili: bool = Field(default=True, description="找 B 站视频、看懂别人发的 B 站链接")
 
 
 class QzoneSection(PluginConfigBase):
@@ -195,6 +196,20 @@ MUSIC_WANT_DESC = (
 )
 MUSIC_COUNT_DESC = "几首，对方没说就是 1，最多 5"
 QZONE_MOOD_DESC = "你现在的心情，两到六个字，例如「有点困」「心情不错」「被雨烦到」。会用在文案和配图的气氛上"
+
+BILI_SEARCH_DESC = (
+    "在 B 站找视频发到聊天里（封面、标题和链接）。对方想看某类视频、让你找个视频、「有没有 xx 的视频」时调用。"
+    f"{ACT_IN_CHARACTER}"
+)
+BILI_KEYWORD_DESC = "B 站搜索关键词，简短具体，例如「猫 搞笑」「原神 剧情」「做红烧肉」"
+BILI_COUNT_DESC = "几个，对方没说就是 1，最多 3"
+BILI_ORDER_DESC = "relevant 最相关，popular 播放最多，latest 最新发布"
+BILI_WATCH_DESC = (
+    "看一个 B 站视频：读它的标题、简介和字幕，知道视频讲了什么。"
+    "有人发了 B 站链接或分享卡片、问你「这个视频讲的啥」「你看看这个」、或者你想接视频的话题时调用。"
+    "只能看 B 站，抖音、快手等其他平台看不了。看完像自己看过一样自然地聊，不要复述内容。"
+)
+BILI_LINK_DESC = "对方发的 B 站链接、BV 号或 b23.tv 短链，原样照抄；对方发的是分享卡片、你看不到链接时不填"
 
 SCENE_DESC = (
     "自拍的情景。按聊天内容、现在的时间、你在工作中还是下班后，想一个自然的情景，"
@@ -578,6 +593,38 @@ class RinneToolsPlugin(MaiBotPlugin):
         recent = await self._recent_chat(stream_id) if stream_id else []
         return await self._call("music_recommend", "music",
                                 {"want": want, "count": count, "recent_chat": recent or None}, kwargs)
+
+    # -------------------------------------------------------- B 站
+
+    @Tool(
+        "rinne_bilibili_search",
+        brief_description=BILI_SEARCH_DESC,
+        parameters=[
+            _msg_id_param(),
+            ToolParameterInfo(name="keyword", param_type=ToolParamType.STRING, description=BILI_KEYWORD_DESC, required=True),
+            ToolParameterInfo(name="count", param_type=ToolParamType.INTEGER, description=BILI_COUNT_DESC,
+                              required=False, default=1),
+            ToolParameterInfo(name="order", param_type=ToolParamType.STRING, description=BILI_ORDER_DESC,
+                              required=False, enum_values=["relevant", "popular", "latest"], default="relevant"),
+        ],
+        core_tool=True,
+    )
+    async def rinne_bilibili_search(self, keyword: str = "", count: int = 1, order: str = "relevant",
+                                    **kwargs: Any) -> dict[str, Any]:
+        return await self._call("bilibili_search", "bilibili",
+                                {"keyword": keyword, "count": count, "order": order}, kwargs)
+
+    @Tool(
+        "rinne_bilibili_watch",
+        brief_description=BILI_WATCH_DESC,
+        parameters=[
+            _msg_id_param(),
+            ToolParameterInfo(name="link", param_type=ToolParamType.STRING, description=BILI_LINK_DESC, required=False),
+        ],
+        core_tool=True,
+    )
+    async def rinne_bilibili_watch(self, link: str = "", **kwargs: Any) -> dict[str, Any]:
+        return await self._call("bilibili_watch", "bilibili", {"link": link}, kwargs)
 
     async def _recent_chat(self, stream_id: str, limit: int = 20) -> list[str]:
         """推荐歌时带上群里最近的聊天（只当气氛参考，用户确认过由 MaiBot 带过去，NoneBot 不存）。"""
